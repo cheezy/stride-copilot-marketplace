@@ -31,7 +31,7 @@ copilot plugin uninstall stride-copilot         # Remove a plugin
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| [`stride-copilot`](plugins/stride-copilot) | 2.19.0 | Task lifecycle skills and custom agents for Stride kanban: claiming, completing, and creating tasks and goals for AI agents in GitHub Copilot CLI. |
+| [`stride-copilot`](plugins/stride-copilot) | 2.20.0 | Task lifecycle skills and custom agents for Stride kanban: claiming, completing, and creating tasks and goals for AI agents in GitHub Copilot CLI. |
 
 The plugin list above is kept in sync with the `plugins[]` array in [`.github/plugin/marketplace.json`](.github/plugin/marketplace.json).
 
