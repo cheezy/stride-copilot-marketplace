@@ -1,0 +1,439 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [2.19.0] - 2026-06-20
+
+Parity release: ports the canonical stride **v1.30.0** change (goal G254), documenting the `created_by_agent` task field across the Copilot creation skills. Copilot divergences are preserved: agents keep the `.agent.md` suffix and there is no marketplace. Delivered under task W1234.
+
+### Added
+
+Agent-created tasks previously landed with `created_by_agent` nil, so the `/agents` activity feed rendered an uninformative `?` avatar on every `created` row. The creation skills now document the field on the create request bodies:
+
+- **`skills/stride-creating-tasks/SKILL.md`** — `created_by_agent` added to the complete-task example, the Field Quick Reference table (string, create-only, forbidden on `PATCH`), and an explanatory note: set it to the plugin's own agent name (`"GitHub Copilot"` — the exact value sent as `agent_name` on claim/complete), never the `ai_agent:<model>` token form, so one agent stays one roster identity.
+- **`skills/stride-creating-goals/SKILL.md`** — `created_by_agent` added to the batch goal example with a note that the server propagates the goal's value to every nested child task.
+
+Documentation-only: no wire-shape, hook, or auth change; `created_by_agent` is optional on create, was already accepted by the API, and is forbidden on `PATCH`.
+
+## [2.18.0] - 2026-06-19
+
+Parity release: ports the canonical stride **v1.29.0** change (goal G243 → Copilot goal G244), documenting the `technical_details` task field across the Copilot variant. Copilot divergences are preserved: agents keep the `.agent.md` suffix and there is no marketplace.
+
+### Added
+
+- **`technical_details` task field documentation** (W1183–W1185 — canonical **v1.29.0**, G243/W1179–W1181) — `technical_details` is an **optional, free-form JSON object** (arbitrary keys/values) a task may carry for any additional technical context that does not fit the structured fields — data shapes, gotchas, key decisions, reference links. Unlike `testing_strategy` it has **no fixed keys**, and it is **not** one of the five review_queue-scored fields (`acceptance_criteria`, `testing_strategy`, `security_considerations`, `pitfalls`, `patterns_to_follow`), so a blank `{}` is never a scoring gap. Documented consistently in the creation contracts (`skills/stride-creating-tasks/SKILL.md` Field Quick Reference, complete-task example, Embedded Object Formats — contrasted with `testing_strategy`; `skills/stride-creating-goals/SKILL.md` nested-task note), the enrichment/decomposition guidance (`agents/task-enricher.agent.md` + `skills/stride-enriching-tasks/SKILL.md` — optional, populate from discovered context only, never fabricated, no secrets; `agents/task-decomposer.agent.md` MAY-carry note), and the workflow/exploration references (`skills/stride-workflow/SKILL.md` Step 1 review list; `agents/task-explorer.agent.md` folds it into the summary).
+
+### Backward compatibility
+
+Documentation-only. No wire-shape, hook, or `.stride.md` / `.stride_auth.md` change; `technical_details` is optional everywhere it appears and is never added to any scored-field set, so tasks that omit it behave exactly as before.
+
+## [2.17.0] - 2026-06-13
+
+Parity release: brings the Copilot variant up from canonical stride v1.23.0 to **v1.28.0**, porting five canonical releases (goal G229). Copilot divergences are preserved, not "fixed" toward canonical: agents keep the `.agent.md` suffix, there is no `AGENTS.md` (README is the doc surface), there is no marketplace, and the review-block extraction lives in `skills/stride-subagent-workflow/SKILL.md` rather than `stride-workflow` Step 6. Already-shipped items (reviewer `project_checks`/`not_applicable` enum, `security_considerations` scoring, the base64 `changed_files` envelope, and the `reviewer_result` verbatim passthrough) were **not** re-ported.
+
+### Added
+
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1`, `hooks/hooks.json`** (W1118 — canonical **v1.25.0**, W1093–W1096) — *changed_files survives an `after_doing` timeout.* The per-file diff snapshot is now captured and uploaded **before** the `after_doing` gate commands run (early `finalize_after_doing` / `Invoke-FinalizeAfterDoing`, gated on the GLOBAL `$HOOK_NAME` so `after_goal` stays inert), then refreshed after the gate succeeds. A new `.stride-diff-upload-state` file records the last upload outcome (task id + HTTP code only — never credentials), and the `before_review` hook self-heals on a fresh timeout budget: it re-verifies that state and re-captures + re-uploads when no healthy 2xx is on record for the current task (a successful upload is never repeated). Shared helpers `upload_changed_files_snapshot` + `record_diff_upload_state` (bash) and `Invoke-ChangedFilesUpload` + `Write-DiffUploadState` (PowerShell). Both Bash hook timeouts in `hooks.json` rise from 120s to **300s**, `.gitignore` gains `.stride-diff-upload-state`, and the README documents the `after_doing` time budget. The PowerShell upload helper recovers the real HTTP code from a `WebException` so non-2xx outcomes are recorded without `-SkipHttpErrorCheck` (preserves PowerShell 5.1 support).
+
+### Fixed
+
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1`** (D68 — canonical **v1.26.0**, D65) — *a passing `after_doing` gate no longer renders as a red hook error.* Each successful command's tail-truncated (50-line cap) stdout/stderr is folded into a new `commands_output` array on the success JSON instead of being written to stderr (which Claude Code mislabels as an error even on exit 0). The failure branch is unchanged; the no-jq degraded path still emits no success JSON. `commands_output` is encoded via `jq --arg` / `ConvertTo-Json` so command output cannot inject JSON fields.
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1`** (D69 — canonical **v1.27.0**, D67) — the hook's own `.stride-diff-upload-state` and `.stride-changed-files.json` are excluded from the `changed_files` snapshot (bash capture and PowerShell upload), anchored to **exact repo-root paths** so a same-named file in a subdirectory is still captured.
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1`** (W1119 — canonical **v1.28.0**, G224/W1086+W1087) — the claim-time `TASK_BASE_REF` refresh is now **unconditional on every detected claim**, with a persisted-output-file fallback that recovers the claim API JSON from a "Full output saved to: …" notice (validated as an existing regular file and parsed read-only — never sourced or executed) so an oversized claim response no longer leaves a stale base ref that makes `changed_files` span unrelated commits. The PowerShell hook now **writes `TASK_BASE_REF` for the first time** and guards property access with `PSObject.Properties.Name` against StrictMode throws.
+
+### Updated
+
+- **`agents/task-reviewer.agent.md`, `skills/stride-subagent-workflow/SKILL.md`, `skills/stride-completing-tasks/SKILL.md`, `skills/stride-workflow/SKILL.md`** (W1117 — canonical **v1.24.0**, G222/W1072–W1076, hardening-only — plus D66 from canonical v1.26.0) — the reviewer dispatch now passes **every** review field the task supplies (adds `security_considerations`, `description`, `what`, `why`); `not_assessed` is reserved strictly for task-empty sections; `reviewer_result` is a mechanical whole-object copy guarded by a **non-bypassable pre-submission self-check** (every section present, `project_checks` count matches, and — D66 — `acceptance_criteria` is an exact 1:1 verbatim restatement of the task's criterion lines with a re-review count self-check).
+
+### Testing
+
+- `hooks/test-stride-hook.sh` (217 assertions) and `hooks/test-stride-hook.ps1` (168 assertions) both pass, including new groups for the early-capture + self-heal (W1118), the `commands_output` D65 contract (D68), the D67 artifact exclusion (D69), and the claim-time base-ref refresh (W1119 — the PowerShell suite's first git-backed fixtures). As part of W1118, the PowerShell test harness was also repaired for PowerShell 7.x (process spawning switched from arg-splitting `Start-Process` to `ProcessStartInfo`, plus StrictMode `$null.Count` guards).
+
+### Source
+
+Goal G229 — five canonical ports: v1.24.0 (G222), v1.25.0 (W1093–W1096), v1.26.0 (D65+D66), v1.27.0 (D67), v1.28.0 (G224). No marketplace pin update — stride-copilot is not distributed through a marketplace.
+
+## [2.16.0] - 2026-06-08
+
+Parity release: brings the Copilot variant to G220/G219 parity for the reviewer `project_checks` `not_applicable` status and full-checklist emission (canonical: stride v1.23.0, commit a4e7e6f, W1057). Feature minor (2.15.0 → 2.16.0).
+
+### Updated
+
+- **`agents/task-reviewer.agent.md`** — The `project_checks[]` per-entry `status` enum gains a third value, **`not_applicable`**, alongside `met` / `not_met`, and the reviewer is now required to **emit one entry for every top-level `CODE-REVIEW.md` bullet — never omit one**. Previously, with only `met` / `not_met` available, the reviewer silently dropped bullets that had no bearing on the diff under review (a small one-line fix surfaced only 2 of ~9 checks), so the Kanban review queue's "Code review" panel rendered a partial, ambiguous checklist. Now bullets that do not apply are marked `not_applicable` with a one-line reason in `evidence`; `not_applicable` is **approval-neutral** — it produces no paired `issues[]` entry and never contributes to `changes_requested` (only `not_met` does). `schema_version` bumps `"1.3"` → `"1.4"`, and the worked example demonstrates a `not_applicable` row.
+- **`README.md`, `skills/stride-completing-tasks/SKILL.md`, `skills/stride-workflow/SKILL.md`, `skills/stride-subagent-workflow/SKILL.md`** — All example/prose `schema_version` strings bumped `"1.3"` → `"1.4"` in lockstep so no stale `"1.3"` remains; the README schema summary now notes the `met`/`not_met`/`not_applicable` enum and full-checklist emission.
+
+### Backward compatibility
+
+Documentation/agent-prompt change only — no wire-shape, hook, `.stride.md`, `.stride_auth.md`, or `.gitignore` changes. The change is additive: `reviewer_result` is stored as `:jsonb` by the Kanban server and persisted verbatim (the v2.15.0 passthrough change), so the new `not_applicable` status value flows through with no consumer edit. Payloads from reviewers on the prior `"1.3"` schema (emitting only `met` / `not_met`) remain valid. The Kanban review-queue panel renders `not_applicable` as a neutral "N/A" pill (kanban-side, ships independently).
+
+### Source
+
+W1060 under goal G220 — the Copilot port of W1057 (reviewer `not_applicable` status + full-checklist emission) from goal G219. The canonical implementation is stride v1.23.0 (commit a4e7e6f). No marketplace pin update — stride-copilot is not distributed through a marketplace.
+
+## [2.15.0] - 2026-06-08
+
+Bundled release covering two ports from the main `stride` plugin (G217 + G218 parity).
+
+### Added
+
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1`** (W1044 / D61) — The `after_doing` hook now uploads the per-file diff snapshot to `/api/tasks/:id/changed_files` as a **transport-encoded envelope** — `{"changed_files":{"encoding":"base64","data":"<single-line-base64>"}}` — instead of the raw `{"changed_files":[...]}` array. An edge request filter (WAF) in front of the Stride server can misread a dense code diff as an attack payload and silently drop the upload, leaving `changed_files` empty in the review queue; base64-wrapping the body neutralizes that false positive while the server decodes it back to the identical list. Falls back to the raw `{"changed_files":[...]}` object when `base64` is unavailable (never a bare top-level array). A non-2xx upload response is now surfaced as a stderr warning rather than discarded (non-fatal to completion; the bearer token is never logged). The PowerShell mirror uses `[System.Convert]::ToBase64String` and `[Console]::Error.WriteLine`. Hook test suites (`hooks/test-stride-hook.sh` 140/0, `hooks/test-stride-hook.ps1`) assert the encoded envelope, raw-text absence, and base64 round-trip.
+
+### Fixed
+
+- **`skills/stride-subagent-workflow/SKILL.md`** (W1052 / D63) — The "Extracting the structured review block" guidance built `reviewer_result` from a hand-maintained enumerated copy-list of structured keys that omitted `project_checks`, so the reviewer's CODE-REVIEW.md per-bullet audit was silently dropped on completion and the Kanban review queue's **Code review** panel rendered nothing. The guidance is now a **verbatim passthrough**: copy the reviewer's entire parsed JSON object into `reviewer_result` and overlay only the legacy summary fields. The fallback (no parseable JSON block) was inverted to a legacy-only send list so it no longer enumerates structured keys either.
+
+### Updated
+
+- **`agents/task-reviewer.agent.md`** (W1052 / W1049) — Added an explicit **consumption invariant**: the canonical schema is the only place the structured key-set is enumerated, and the completion path MUST persist the reviewer's emitted JSON verbatim and MUST NOT maintain its own allow-list of keys to copy.
+
+### Backward compatibility
+
+Wire-shape: the `changed_files` envelope requires a Stride server that accepts the `base64` / `gzip+base64` encodings on `/changed_files` (ships in the kanban repo); the raw-array fallback path remains byte-compatible with the prior hook. The `reviewer_result` change is documentation/skill-instruction only — `project_checks[]` already existed and is already rendered by the review queue; this release simply stops dropping it. No `.stride.md` / `.stride_auth.md` / `.gitignore` changes required.
+
+### Source
+
+W1044 (D61 base64 changed_files transport port), W1052 (D63 reviewer_result verbatim passthrough + W1049 consumption invariant). Mirrors the main `stride` plugin's 1.22.0 (D61) and 1.22.1 (project_checks) releases.
+
+## [2.14.0] - 2026-06-07
+
+Parity release: brings the Copilot variant to G210 parity by adding `security_considerations` as the **fifth** review_queue-scored field across the creation, enrichment, decomposition, review, completion, and extraction skills/agents. Feature minor (2.13.0 → 2.14.0).
+
+### Added
+
+- **`skills/stride-creating-goals/SKILL.md` + `skills/stride-creating-tasks/SKILL.md` — `security_considerations` as the 5th scored field (mirrors canonical G210).** Adds `security_considerations` everywhere the four-field scored set appears: the review_queue scoring banner, the required/nesting field lists, the minimum-bar list, the Red Flags - STOP list, the Rationalization Table, and the example JSON. `creating-tasks` also gains the `### security_considerations` Embedded-Object-Formats WRONG-vs-RIGHT subsection (array-of-strings shape + the `"None — …"` escape hatch for tasks with no security surface).
+- **`skills/stride-enriching-tasks/SKILL.md` + `agents/task-enricher.agent.md` — Step 5 security pass + 17-item checklist.** Expands enrichment Step 5 from "Identify Risks" to "Identify Risks **and Security**" → `pitfalls`, `security_considerations` (input validation/sanitization, authorization boundaries, secret/credential handling, injection surfaces, data exposure). Grows the pre-submission checklist from 16 to **17** items, and threads `security_considerations` through the PATCH/output example JSON, the field-type reminders, and the Red Flags list.
+- **`agents/task-decomposer.agent.md` — `security_considerations` Required.** Marks `security_considerations` a Required field in the per-task field table, the single-goal output template, and every one of the four worked-example tasks (array-of-strings with concrete, context-appropriate considerations).
+- **`agents/task-reviewer.agent.md` — Step 5 Security Considerations review + schema 1.3.** Adds the "Security Considerations Alignment" review step (gating that the listed considerations were actually implemented), extends the `issues[]` category enum with `"security"`, adds the `security_considerations` per-section verdict object (`passed` | `failed` | `not_assessed`), and extends the consistency rule + review-queue tile list to cover it. Bumps the reviewer `schema_version` **1.2 → 1.3**.
+- **`skills/stride-completing-tasks/SKILL.md` + `skills/stride-subagent-workflow/SKILL.md` — `security_considerations` persistence + extraction.** The structured `reviewer_result` block now carries the `security_considerations` section verdict alongside `testing_strategy` / `patterns` / `pitfalls` (all examples + prose verdict-chains + Shape-1 schema + quick-reference cheat-sheet), at `schema_version` **1.3**. The "Extracting the structured review block" section in `stride-subagent-workflow` (Copilot's extraction location) adds `security_considerations` to the verbatim-copy field map, the worked examples (schema 1.3), and the JSON-parse-failure omit-list. `skills/stride-workflow/SKILL.md` gains a delegation note naming the `security_considerations` verdict and pointing to the extraction section.
+
+### Backward compatibility
+
+Documentation/contract-only release. No hook script, parser contract, env-var matrix, or workflow step changed — every `.stride.md` hook behavior is byte-identical to 2.13.0. The `security_considerations` additions are contract additions: older completions that omit the field continue to validate (the server tolerates the structured keys as `:jsonb`, and an absent section renders nothing). All intentional Copilot adaptations are preserved (tool-name vocabulary `read`/`search`/`glob`, the `.agent.md` suffix, the `tools:` frontmatter, the `hooks.json` mechanism, and the extraction-in-`stride-subagent-workflow` divergence from canonical's `stride-workflow` Step 6).
+
+### Source
+
+G210 parity (W1029 creating-goals/creating-tasks, W1030 enriching-tasks/task-enricher, W1031 task-decomposer/task-reviewer, W1032 completing-tasks/subagent-workflow/stride-workflow, W1033 release). Mirrors the canonical stride/ G210 `security_considerations` fifth-scored-field release into the Copilot variant. No marketplace pin update — stride-copilot is not distributed through a marketplace.
+
+## [2.13.0] - 2026-06-05
+
+Parity release: brings the Copilot variant up to the canonical stride 1.18.0–1.20.0 reviewer/creation feature set, plus the D54 credential-resolution fix and an adapter-quality uplift. Feature minor (2.12.1 → 2.13.0).
+
+### Added
+
+- **`agents/task-reviewer.agent.md` — project-level checks (mirrors stride 1.18.0).** Adds a step 6 "Project-Level Checks": read `CODE-REVIEW.md` from the project root (via the `read` tool), parse each top-level Markdown bullet as a standing check (nested sub-bullets are context, not separate checks), map a case-sensitive `CRITICAL:` prefix to severity `critical` (default `important`, prefix stripped), and emit `project_checks[]` (`check` / `source` / `status` / `evidence`). Every `not_met` check requires a paired `issues[]` entry with `category: "project_check"`. When `CODE-REVIEW.md` is absent, `project_checks` renders as `[]`. Bumps the reviewer `schema_version` 1.0 → 1.1 and extends the `issues[]` category enum + the `changes_requested` status rule.
+- **`agents/task-reviewer.agent.md` — per-section verdicts + schema 1.2 (mirrors stride 1.19.0 / D58).** Adds the `testing_strategy` / `patterns` / `pitfalls` verdict objects (`passed` | `failed` | `not_assessed` + one-line `note`), the consistency rule (a `failed` verdict must be backed by a matching-category `issues[]` entry and vice-versa), and the three step verdict-recording lines (Pitfall Detection / Pattern Compliance / Testing Strategy Alignment). Bumps the reviewer `schema_version` 1.1 → **1.2**.
+- **`skills/stride-completing-tasks/SKILL.md` + `skills/stride-subagent-workflow/SKILL.md` — structured `reviewer_result` persistence (mirrors stride 1.19.0 / D57).** Documents persisting the reviewer's full structured block verbatim as `reviewer_result` (the rich `schema_version` / `status` / `issue_counts` / `issues[]` / `acceptance_criteria[]` / `project_checks[]` / `testing_strategy` / `patterns` / `pitfalls` keys merged with the legacy `dispatched` / `duration_ms` / `issues_found` / `acceptance_criteria_checked` envelope) rather than the thin envelope. The "Extracting the structured review block" subsection (field mapping, omit-unemitted-keys rule, and JSON-parse-failure fallback) lives in **`stride-subagent-workflow`** — Copilot's extraction location, distinct from canonical's `stride-workflow` Step 6. The schema is cited (`agents/task-reviewer.agent.md`), not redefined.
+- **`skills/stride-workflow/SKILL.md` + `skills/stride-creating-tasks/SKILL.md` + `skills/stride-creating-goals/SKILL.md` — context-informed creation docs (mirrors stride 1.20.0).** Adds a "Context-Informed Creation" section to the orchestrator and "Consuming Provided Context" sections to the two creation skills (context→field mapping, augment-never-override rule, still-required four review_queue fields, and the unchanged `"goals"` root-key / index-dependency rules). Reframed for Copilot's no-slash-command reality: invocation is activating `stride-workflow` with a creation intent + optional directory path (the orchestrator reads the `.md` bundle via `glob`/`read`), **not** `/stride:create-*` commands — no `commands/` directory is added; the sub-skill `## STOP — orchestrator check` gate is referenced (Copilot has no activation-marker file).
+
+### Changed / Fixed
+
+- **`hooks/stride-hook.sh` + `hooks/stride-hook.ps1` — D54 `changed_files` credential resolution.** `finalize_after_doing` / `Invoke-FinalizeAfterDoing` now resolve the upload URL + Bearer token via new `resolve_stride_api_url` / `resolve_stride_api_token` (bash) and `Resolve-StrideApiUrl` / `Resolve-StrideApiToken` (PowerShell) helpers that read `$PROJECT_DIR/.stride_auth.md` as the **primary** source — matching the production `**API Token:**` line, deliberately NOT `**Local API Token:**` — and fall back to the `$COMMAND` literal extraction. This makes the snapshot PUT work when the agent's completion curl uses `$STRIDE_API_URL` / `$STRIDE_API_TOKEN` shell variables (previously the PUT silently no-opped). Fire-and-forget / non-fatal semantics preserved; the token is never logged. New `test-stride-hook.sh` Group 10 (10a–10g) covers auth-file primary, the API-Token-vs-Local discrimination, the `$COMMAND` fallback, the shell-variable skip, and no-token-logging. Bash suite: 140 passed / 0 failed.
+- **`agents/hook-diagnostician.agent.md` — structured-JSON input handling.** Added the "Input Detection and Parsing" section (structured-JSON-from-`stride-hook.sh` detection + raw-text fallback) and the structured-JSON sub-variant of "Structured Output Format" (Command Sequence context), so the diagnostician can parse the structured JSON the plugin's own hook script emits.
+- **Adapter uplift + accuracy reconciliation.** Hardened the bash + PowerShell hook scripts (explanatory `set +uo pipefail` comment, after_review cleanup parity for `.stride-changed-files.json`), corrected Copilot vocabulary (hook-script headers and inline comments "Claude Code" → "GitHub Copilot"/host-neutral; skill prose "shell tool" → "the terminal"; stale `.github/agents/` paths → `agents/`), and reconciled all 7 skills + 5 agents + `plugin.json` against canonical — fixing residual drift while preserving the intentional Copilot adaptations (tool-name vocabulary `read`/`search`/`glob`, the `.agent.md` suffix, `plugin.json`, the `hooks.json` PreToolUse/PostToolUse mechanism, bash + PowerShell hook scripts, and the extraction-in-`stride-subagent-workflow` divergence).
+
+### Backward compatibility
+
+The reviewer-schema, structured-`reviewer_result`, and context-creation changes are documentation/contract additions — older completions that still send the thin `reviewer_result` envelope continue to validate (the server tolerates the structured keys as `:jsonb`). The D54 credential-resolution change is the only behavioral change: the `changed_files` PUT now succeeds in the shell-variable-completion-curl case it previously skipped; it remains fire-and-forget and no-ops when neither `.stride_auth.md` nor a `$COMMAND` literal yields a URL+token. All four `.stride.md` hooks produce byte-identical output; the bash test suite is green (140/0).
+
+### Source
+
+G207 (W991 adapter uplift, W992 1.18.0 project_checks, W993 1.19.0/D58 section verdicts, W994 1.19.0/D57 structured reviewer_result persistence, W995 1.19.0/D54 credential resolution, W996 1.20.0 context-threading docs, W997 accuracy reconciliation, W998 release). Mirrors the stride/ **1.18.0** (project_checks), **1.19.0** (section verdicts + structured persistence + D54), and **1.20.0** (context-informed creation) releases into the Copilot variant. No marketplace pin update — stride-copilot is not distributed through a marketplace. No gh release is cut here — that step is human-triggered.
+
+## [2.12.1] - 2026-05-25
+
+### Updated
+
+- **`skills/stride-creating-tasks/SKILL.md`** (W853) — Adds a top-of-file "⚠️ REVIEW QUEUE SCORING" callout that names the four fields the review_queue dashboard scores on every completion (`acceptance_criteria`, `testing_strategy`, `pitfalls`, `patterns_to_follow`) and frames the consequence of omitting any of them: a visible, public, persistent **empty pill** on the dashboard that does not get back-filled later. Reinforces the same four fields with four new bullets in the existing **Red Flags - STOP** list and four new rows in the existing **Rationalization Table**. Wording matches the stride/ Claude Code variant for cross-plugin consistency. No new top-level section was introduced; all reinforcement is co-located with existing structures.
+- **`skills/stride-enriching-tasks/SKILL.md`** (W854) — Adds a top-of-file "⚠️ REVIEW QUEUE SCORING — ENRICHMENT IS THE LAST CHANCE" callout. Promotes `acceptance_criteria`, `testing_strategy`, `pitfalls`, and `patterns_to_follow` to individual mandatory-for-review items in the Phase 4 16-item pre-submission checklist (replacing the prior single-line bundling), each annotated with its specific empty-pill condition. Adds four new Red Flags - STOP bullets matching the existing imperative tone.
+- **`skills/stride-creating-goals/SKILL.md`** (W855) — Adds a top-of-file "⚠️ REVIEW QUEUE SCORING — NESTED TASKS ARE NOT EXEMPT" callout stressing the four-field minimum bar applies to every nested task individually — no "it's just a subtask" discount. Strengthens Task Nesting Rules with a per-field block enumerating each scored field with its empty-pill condition. Adds four new Red Flags - STOP bullets and four new Rationalization Table rows specifically targeting nested-task offloading rationalizations.
+
+### Backward compatibility
+
+Content-only release. No hook script, parser contract, env-var matrix, API field shape, or workflow step changed — every behavior is byte-identical to 2.12.0. The three SKILL.md edits strengthen guidance only; existing task-creation, enrichment, and goal-creation calls continue to validate without modification. No `.stride.md`, `.stride_auth.md`, or `.gitignore` changes are required.
+
+### Source
+
+G166 / W853 / W854 / W855 / W856. Patch release — documentation-only emphasis updates across three SKILL.md files. The change set mirrors the stride/ plugin's 1.17.3 release (Claude Code variant) and the goal is to raise the floor on the four fields the review_queue dashboard scores at completion, so empty pills become rare rather than common.
+
+## [2.12.0] - 2026-05-25
+
+### Critical fix
+
+- **`hooks/stride-hook.sh`** and **`hooks/stride-hook.ps1`** — `finalize_after_doing` / `Invoke-FinalizeAfterDoing` now PUT the per-file diff snapshot to Stride immediately after writing `.stride-changed-files.json` to disk, with the body shaped as `{"changed_files": [...]}` (G162 + G174 ports from main stride 1.16.0 + 1.17.2 shipped together). URL and Bearer token are extracted from the intercepted agent completion command in `$COMMAND` / `$Command` (via `grep -oE` and `-match`) — no new top-level env vars (superseded in 2.13.0, which adds `.stride_auth.md` as the primary credential source — see the D54 fix). The PUT is fire-and-forget (`-s ... > /dev/null 2>&1 || true` on bash; `try`/`catch` + `-ErrorAction SilentlyContinue` on PS) and silently no-ops when any prerequisite is missing (`HAS_JQ=false`, no `curl`, no `TASK_ID`, no URL/token in `$COMMAND`, no snapshot file on disk). The on-disk snapshot at `.stride-changed-files.json` is preserved unchanged for legacy `--argjson cf` consumers on older deployments. **G162 and G174 ship together because the wrap is required for the PUT to work at all** — a bare top-level array lands at `params['_json']` under Plug.Parsers, validates as `{:ok, nil}`, and is persisted as NULL, silently clearing `changed_files` on every task completed against a 1.16.0+ server doing real PUT-side processing.
+
+### Added
+
+- **`hooks/test-stride-hook.sh`** — New Test Group 9 (W838) — 6 sub-cases covering PUT-success (URL/token/method/body assertions via a stub `curl` recorded into a fixture, plus wrapped-object body assertion and snapshot round-trip), no-Bearer-token (PUT skipped, snapshot still written), no-`TASK_ID` (PUT skipped), empty-snapshot (`[]` still PUTs as wrapped `{"changed_files": []}`), PUT-failure (stub exits 1, hook still exits 0, snapshot persists), and `HAS_JQ=false` (PUT skipped via the sourced unit-test path). Bash suite total: 131 passed / 0 failed (117 prior + 14 new).
+- **`hooks/test-stride-hook.ps1`** — New Test Group 8 (W839) — HttpListener-backed PUT-success test (asserts method, path, Authorization header, body content, wrapped-object shape, snapshot round-trip) plus 4 wrapper-resilience cases (unreachable port doesn't propagate, no snapshot file no-ops, no Bearer token no-ops, no `TASK_ID` no-ops).
+
+### Backward compatibility
+
+The wire-shape fix is fully backward-compatible at the server boundary — a wrapped `{"changed_files": [...]}` body has always been the documented contract. The four existing `.stride.md` hooks (`before_doing`, `after_doing` outer body, `before_review`, `after_review`, `after_goal`) produce byte-identical output to v2.11.0, empirically confirmed by all 117 prior bash tests passing unchanged. The on-disk `.stride-changed-files.json` snapshot is preserved unchanged so legacy `--argjson cf` consumers on older deployments still read it.
+
+### Migration
+
+Install or update via your normal stride-copilot install flow. No `.stride.md`, `.stride_auth.md`, or `.gitignore` changes are required. No marketplace pin update — stride-copilot is not distributed through stride-marketplace. Going forward, every task completed under 2.12.0+ will populate `changed_files` correctly against any Stride server with the `PUT /api/tasks/:id/changed_files` endpoint (kanban W777+). Against pre-1.16.0 servers without that endpoint, the hook PUT 404s harmlessly (fire-and-forget) and the inline-cat pattern in `stride-completing-tasks/SKILL.md` remains the path that carries the snapshot.
+
+### Source
+
+G162 (auto-PUT — bash port W838, PS port W839, test groups W840) + G174 (wrapped body — folded into W838/W839 since shipping the PUT without the wrap is the broken state that made stride 1.17.2 a critical fix). Mirrors the stride/ 1.16.0 + 1.17.2 releases into the Copilot variant. No marketplace pin update — stride-copilot is not on the marketplace per user instruction.
+
+## [2.11.0] - 2026-05-22
+
+### Added
+
+- **`## after_goal` hook section** — fifth `.stride.md` hook, fires after the parent goal's final child task completes. Blocking, 60s timeout, same single-bash-fence parsing rule as the four existing hooks. The plugin's `hooks/stride-hook.sh` and `hooks/stride-hook.ps1` now inspect the response payload of `/complete` and `/mark_reviewed` for an `after_goal` entry and execute the local `## after_goal` section as a blocking hook when present. Missing section is a clean no-op (back-compat). Structured failure JSON surfaces on stdout for the agent to forward via `PATCH /api/tasks/:goal_id/after_goal` per the Stride server contract. Implemented as W788 / W789.
+- **`GOAL_*` env vars** — `GOAL_ID`, `GOAL_IDENTIFIER`, `GOAL_TITLE`, `GOAL_DESCRIPTION` forwarded by the hook bridge into the `## after_goal` child process environment, sourced verbatim from the server-supplied `hook.env`. `BOARD_*`, `COLUMN_*`, `AGENT_NAME`, and `HOOK_NAME` remain present across all five hooks. The bridge never invents, derives, or looks up these values client-side.
+- **`skills/stride-workflow/SKILL.md`** — Step 6 (Execute Hooks) opens with a Hooks Reference table listing all five hooks (timing/blocking/timeout/purpose), followed by a Hook Environment Variables matrix (`TASK_*` vs `GOAL_*` per hook) and a Canonical Hook Examples block. Step 8 (Post-Completion Decision) gains a subsection describing the goal-Done transition triggered by `after_goal` success and the agent's `PATCH /api/tasks/:goal_id/after_goal` POST contract. The examples explicitly note the hook is general-purpose (Slack notifications, artifact archival, release pipelines, project-level smoke tests are all valid uses). Implemented as W791.
+- **`hooks/test-stride-hook.sh`** and **`hooks/test-stride-hook.ps1`** — End-to-end test coverage for the new routing (W790). Each harness adds five cases: after_goal present + section present, after_goal present + section absent (back-compat), after_goal absent (unchanged behavior), section command exits non-zero (structured failure JSON on stdout, script exit 0), and mark_reviewed parity with /complete. Bash suite now reports 117/0 (100 prior + 17 new).
+
+### Backward compatibility
+
+A `.stride.md` without a `## after_goal` section continues to work unchanged — the new routing code is a clean no-op for that case. The four existing hook routes (`before_doing` / `after_doing` / `before_review` / `after_review`) produce byte-identical output to v2.10.1 (and prior), empirically confirmed by all 100 pre-existing tests passing unchanged after the parse-and-exec refactor. Older agent runtimes that don't speak the after_goal protocol — including those that don't make the PATCH POST — are covered by the server-side grace-window worker, which promotes the goal after the configured wait expires.
+
+### Migration
+
+Install or update via your normal stride-copilot install flow. No `.stride.md`, `.stride_auth.md`, or `.gitignore` changes are required. To opt into the new hook, add a `## after_goal` section to `.stride.md`. The receiving Stride server must include the `PATCH /api/tasks/:id/after_goal` endpoint and the `after_goal_status` / `after_goal_result` / `after_goal_attempts` columns on the `tasks` table for agent reports to land.
+
+### Source
+
+G164 / W788 (bash routing), W789 (PowerShell mirror), W790 (end-to-end tests), W791 (SKILL.md), W792 (this release). Pattern mirrors the Claude plugin's v1.17.1 release (https://github.com/cheezy/stride/releases/tag/v1.17.1) — the after_goal feature shipped first on the Claude plugin and is being ported to the other Stride agent plugins.
+
+## [2.10.1] - 2026-05-21
+
+### Fixed
+
+- **`skills/stride-completing-tasks/SKILL.md`** — Replaced three occurrences of `"$CLAUDE_PROJECT_DIR/.stride-changed-files.json"` with the defaulted form `"${CLAUDE_PROJECT_DIR:-.}/.stride-changed-files.json"` in the canonical inline-cat pattern. Affected lines: the pre-completion verification checklist item, the canonical `API Request Format` PATCH snippet, and the `Per-File Diff Capture (Optional)` snippet. The inline structure, the `--argjson cf "$(cat ... 2>/dev/null || echo '[]')"` shape, and the binary/truncation contract are unchanged — only the variable expansion is defaulted.
+
+### Why this release
+
+Under Claude Code's TypeScript SDK runtime (the host shape under GitHub Copilot CLI when bridging to Claude Code agents), `$CLAUDE_PROJECT_DIR` is unset/empty, so the bare expansion produced `/.stride-changed-files.json`. The `cat` failed, the `|| echo '[]'` fallback fired, and agents POSTed `changed_files: []` even when the hook had correctly written the snapshot. The defaulted form `${CLAUDE_PROJECT_DIR:-.}` falls back to the current working directory whenever the variable is unset or empty, so the read works under both runtimes.
+
+### Backward compatibility
+
+Wire shape unchanged. Behavior under a non-empty `$CLAUDE_PROJECT_DIR` is byte-identical to v2.10.0. Under the empty-variable shape, agents that follow the canonical SKILL.md pattern now successfully capture the snapshot they were already trying to send.
+
+### Source
+
+Mirrors the stride/ v1.15.1 fix (W767/W768) for the Copilot variant. Implemented as W769 (SKILL.md hotfix) and W770 (release coordination). No marketplace pin update — stride-copilot is not distributed through stride-marketplace.
+
+## [2.10.0] - 2026-05-20
+
+### Changed
+
+- **`hooks/stride-hook.sh`** — `capture_changed_files()` now reflects the agent's full working state at completion time, not just committed history. The function uses `git diff $base` (no `..HEAD`) so committed-since-base, staged-but-uncommitted, AND modified-but-unstaged changes all surface in a single pass, and adds a `git ls-files --others --exclude-standard` pass to enumerate untracked new files. Untracked text files appear as synthesized new-file unified patches (diffed against `/dev/null` via `git diff --no-index --no-color`); untracked binaries are detected via the `Binary files ... differ` sentinel that `--no-index` emits and use the existing binary placeholder string. A path that is both committed-since-base AND further modified in the working tree appears exactly once in the snapshot with a diff that reflects the final working-tree state. The 500-line per-file truncation rule and the `[binary file — no diff captured]` placeholder string are preserved unchanged.
+- **`skills/stride-completing-tasks/SKILL.md`** — Three coordinated surface rewrites so agents stop the broken "separate cat then curl" pattern. (1) The canonical "API Request Format" section now leads with a `bash`/`curl` example that inlines the snapshot read via `--argjson cf "$(cat \"$CLAUDE_PROJECT_DIR/.stride-changed-files.json\" 2>/dev/null || echo '[]')"` INSIDE the `jq -n` that builds the curl's `-d` payload — followed by the JSON body shape as an illustrative supplement. The absolute `$CLAUDE_PROJECT_DIR/...` path is used so a non-root agent CWD does not silently miss the file. (2) The Per-File Diff Capture (Optional) section now contains a "Why inline?" paragraph explaining that the PreToolUse-on-complete hook writes the snapshot DURING the curl call, so a separate Bash tool call BEFORE the curl reads the file before the hook populates it. (3) The pre-completion verification checklist item for `changed_files` is rewritten to test for the inline pattern + absolute path explicitly, replacing the older "read it and embed it verbatim" prose. A new "Working-tree semantic (v1.15.0+)" paragraph documents the broadened capture.
+- **`hooks/test-stride-hook.sh`** — Test Group 7 grows from 14 cases to 19 cases with 5 new Option D cases (7o-7s): modified-uncommitted tracked file present in snapshot, staged-uncommitted change present, untracked new file appears as synthesized `+++ b/<path>` patch with `+<content>` body, untracked binary file emits the exact binary placeholder, and dedupe — a committed-then-further-modified path appears exactly once with the diff reflecting the final working-tree content. Existing 7i (HEAD~1 fallback), 7j (e2e after_doing), 7k (all-commented after_doing), and 7m (empty diff) fixtures updated to add a `.gitignore` for stride runtime artifacts (`.stride.md`, `.stride-env-cache`, `.stride-changed-files.json`) and to redirect subshell stdout to a sibling temp file rather than to a path inside the test's working directory — both adjustments accommodate the new untracked-file capture without weakening any assertion.
+- **`plugin.json`** — Version bumped from `2.9.1` to `2.10.0` (the snapshot semantic broadens; the wire shape is unchanged).
+
+### Why this release
+
+A Copilot CLI task completing without an intermediate commit produced an empty `.stride-changed-files.json`. Same root cause as stride 1.15.0: (a) `capture_changed_files()` was anchored to `<base>..HEAD`, so working-tree-only changes were invisible; (b) the canonical SKILL.md example read the snapshot in a separate Bash tool call BEFORE the curl, which means the PreToolUse-on-complete hook had not yet populated the file at read time. This release mirrors the stride 1.15.0 fix into stride-copilot — the snapshot now reflects the agent's working state regardless of commit state, and the canonical example inlines the snapshot read inside the curl invocation so the read happens AFTER the hook fires.
+
+### Backward compatibility
+
+The wire shape of `changed_files` is unchanged — same `path` + `diff` keys, same 500-line truncation rule, same binary placeholder string. Completion payloads that omit `changed_files` entirely continue to validate (the empty-array form produced by the inline `|| echo '[]'` fallback is also valid). Reviewers consuming the field see additional content under the new semantic — uncommitted edits and untracked new files now appear in `/review` whereas previously they were silently dropped.
+
+### Source
+
+Mirrors stride 1.15.0 (G157/W758) into stride-copilot. Delivered in copilot as W759 (combined SKILL.md + hook + tests + release). No marketplace coordination — stride-copilot ships by tag directly.
+
+## [2.9.1] - 2026-05-20
+
+### Changed
+
+- **`skills/stride-completing-tasks/SKILL.md`** — Closes the canonical-example/checklist gap left behind by 2.9.0 (W729). 2.9.0 added the dedicated `## Per-File Diff Capture (Optional)` section, but the canonical API Request Format example body and the pre-completion verification checklist still omitted `changed_files`, so agents copying from the canonical example never reached the Optional section and never embedded `.stride-changed-files.json` into their completion payload. This release adds (a) `actual_files_changed` + `changed_files` to the canonical example body with a one-entry unified-patch diff, (b) the verification checklist item `Did you embed \`.stride-changed-files.json\` into the payload as \`changed_files\`?`, and (c) the `**Optional:** Include changed_files...` paragraph after the `**Critical:**` line linking to `docs/diff-contract.md`. The W729-authored `## Per-File Diff Capture (Optional)` section is preserved intact as the encoding-rules anchor.
+- **`plugin.json`** — Version bumped from `2.9.0` to `2.9.1`.
+
+### Source
+
+Mirrors stride 1.14.1 (G155/W748) into stride-copilot for cross-plugin parity. Delivered in copilot as W755 (canonical-example + checklist edit) and W757 (this release).
+
+## [2.9.0] - 2026-05-20
+
+### Added
+
+- **`hooks/stride-hook.sh`** — Added `capture_changed_files()` per the G148/W719 contract: emits a JSON array of `{path, diff}` entries for every file changed between `$TASK_BASE_REF` and `HEAD`, truncates diffs over 500 lines with the marker `[diff truncated at 500 lines]`, and emits `[binary file — no diff captured]` for files git reports as binary in `--numstat`. Falls back to `HEAD~1` when the base ref is empty or unresolvable; returns `[]` for any degraded path (jq missing, git missing, not in a repo, no commits to diff). The function is defined above the early-exit guards so the test suite can `source` the script to call it in isolation.
+- **`hooks/stride-hook.sh`** — Added `TASK_BASE_REF` (captured via `git rev-parse HEAD` at `before_doing` time) to the `.stride-env-cache` writer so `capture_changed_files` has an anchor when `after_doing` fires.
+- **`hooks/stride-hook.sh`** — Added `finalize_after_doing()` helper and wired it to all three `after_doing` exit points (no-commands branch, all-comments-filtered branch, and post-command-loop). The helper writes the JSON array to `$CLAUDE_PROJECT_DIR/.stride-changed-files.json`.
+- **`hooks/stride-hook.sh`** — Added stale-snapshot cleanup on `before_doing` (`rm -f .stride-changed-files.json`) and lifecycle cleanup on `after_review` (removes both `.stride-env-cache` and `.stride-changed-files.json`).
+- **`hooks/test-stride-hook.sh`** — Added Test Group 7 (22 cases, 7a–7n) covering truncation thresholds (7a 500-line preserved, 7b 750-line truncated with marker as last line, 7c empty stays empty), binary detection (7d numstat `- -` row, 7e text row not flagged, 7f missing file not flagged), real-git integration against a temp repo with text + binary + deleted entries (7g), non-repo fallback (7h), empty-base fallback to `HEAD~1` (7i), end-to-end `after_doing` snapshot write (7j), all-commented `after_doing` path (7k), legacy-bypass guarantee — `before_review` preserves a pre-seeded stale snapshot (7l), empty changed-files list (7m), and null-byte binary file detection (7n). Suite now reports 91 passed / 0 failed (up from 69).
+- **`skills/stride-completing-tasks/SKILL.md`** — Added the `changed_files` row to the Completion Request Field Reference table and a new "Per-File Diff Capture (Optional)" section. The section cites the canonical [`docs/diff-contract.md`](https://raw.githubusercontent.com/cheezy/kanban/refs/heads/main/docs/diff-contract.md) for the field shape, truncation marker, binary placeholder, and 500-line inclusive cap. It documents the snapshot lifecycle (refreshed on every `after_doing`, cleaned up on `after_review`), the `cat .stride-changed-files.json 2>/dev/null || printf '[]'` read pattern, and the explicit backward-compatibility rule that absent snapshots must produce completions that omit the field entirely (no synthesized diffs).
+
+### Changed
+
+- **`hooks/stride-hook.sh`** — Rewrote the bare `exit 0` early-exit guards as `return 0 2>/dev/null || exit 0` so the test suite can `source` the script to drive `capture_changed_files` in isolation. The guards now sit immediately after the function definition and behave identically when the script is executed normally.
+- **`plugin.json`** — Version bumped from `2.8.0` to `2.9.0`.
+
+### Source
+
+Ported from stride 1.14.0 (commits `7b95b4a` "Add per-file diff capture for completion payloads (W725)" and `07d15d8` "Document optional changed_files completion field (W726)", released as `v1.14.0`). Cross-plugin parity for Stride G148 / W719. Delivered in copilot as W729 (capture + tests + docs) and W730 (test coverage acknowledgment).
+
+## [2.8.0] - 2026-05-19
+
+### Changed
+
+- **`agents/task-reviewer.agent.md`** — Rewrote Step 6 ("Return Structured Review") and the Output persistence paragraph to require an unconditional fenced ```json block alongside the existing markdown prose. The block matches the canonical `reviewer_result` schema documented in [`stride/agents/task-reviewer.md`](https://github.com/cheezy/stride/blob/main/agents/task-reviewer.md) — `schema_version`, `summary`, `status`, `issue_counts`, `issues[]` (with `severity`/`category` enums), and `acceptance_criteria[]` (with `met`/`not_met` enum). Includes a verbatim worked `changes_requested` example. The prose summary line is preserved above the JSON block so orchestrator fallback paths that grep substring summaries continue to work when JSON parsing fails. No copilot-specific schema variant introduced — the canonical schema is cited by path.
+- **`skills/stride-subagent-workflow/SKILL.md`** — Added an "Extracting the structured review block" subsection to Phase 3 (Code Review). The orchestrator now extracts the first fenced ```json fence from the reviewer's response and populates `reviewer_result` in the completion PATCH payload with both (a) the legacy summary fields (`summary`, `issues_found` from `sum(issue_counts.values())`, `acceptance_criteria_checked` from the length of the structured array) and (b) the structured fields verbatim (`status`, `issue_counts`, `issues`, `acceptance_criteria`, `schema_version`). Includes a worked example and a documented fallback path that keeps older agent versions and parse failures working: substring-match the prose summary, omit structured fields from the PATCH (never empty placeholders), do not abort the completion.
+- **`plugin.json`** — Version bumped from `2.7.0` to `2.8.0`.
+
+### Source
+
+Ported from stride 1.13.0 (commits 9c19359 "Define structured JSON review-report schema in task-reviewer agent" and 8e94eca "Extract structured review block into reviewer_result PATCH payload"). Cross-plugin parity for Stride W685/W686 (implemented in stride-copilot as W694).
+
+## [2.7.0] - 2026-05-06
+
+### Added
+
+- **`agents/task-enricher.agent.md`** — New custom agent that owns the four-phase enrichment procedure (intent parse, codebase exploration, complexity heuristic, 16-item validation checklist). Receives sparse task fields from the orchestrator and returns a single enriched-task JSON object ready for `PATCH /api/tasks/:id`. Ported from stride 1.11.0 (`stride/agents/task-enricher.md`) with Copilot-specific frontmatter (`tools: ["read", "search", "glob"]`, no `model` field, `.agent.md` filename suffix). The body is platform-neutral.
+
+### Changed
+
+- **`skills/stride-enriching-tasks/SKILL.md`** — Slimmed from 776 lines to 264 lines. The four-phase manual enrichment procedure now lives in `agents/task-enricher.agent.md`. The skill retains the STOP preamble, MANDATORY warning, API Authorization block, Iron Law, API integration curl examples, and output example, but the Copilot CLI path now invokes `task-enricher` instead of walking the procedure inline. Other environments still follow the condensed manual walkthrough phases (Phases 1-4 retained in summary form, with the 16-item Phase 4 checklist preserved verbatim).
+- **`skills/stride-subagent-workflow/SKILL.md`** — Added `task-enricher` to the agent inventory in the MANDATORY teaser block. Added a new `## Pre-Claim: Enrichment (Sparse Tasks)` section documenting when and how to invoke the enricher before claiming a task. Added `task-enricher.agent.md` to the Quick Reference Card and References section. Updated the frontmatter `description:` to enumerate `task-enricher` alongside the other custom agents.
+- **`skills/stride-workflow/SKILL.md`** — Step 1 enrichment check expanded into two platform subsections: `#### Copilot CLI: Invoke the Enricher Agent` (3-step dispatch + PATCH flow) and `#### Other Environments: Activate the Enrichment Skill` (manual-phase fallback). Matches the stride 1.11.0 platform-split pattern.
+- **`plugin.json`** — Version bumped from `2.6.0` to `2.7.0`.
+
+### Source
+
+Ported from stride 1.11.0 (commit 92b72ea). Cross-plugin parity goal G86 / W348.
+
+## [2.6.0] - 2026-04-29
+
+### Changed
+
+- **All 6 sub-skill `description:` fields** (`stride-claiming-tasks`, `stride-completing-tasks`, `stride-creating-tasks`, `stride-creating-goals`, `stride-enriching-tasks`, `stride-subagent-workflow`) — Reframed as `INTERNAL — invoked only by stride:stride-workflow. Do NOT invoke from a user prompt.` Removed user-intent verbs (`claim a task`, `complete a task`, etc.) so Copilot's auto-activation matcher no longer routes user prompts to the sub-skills. Wording is byte-identical to the equivalent stride 1.10.0 (commit 5c30036) descriptions for cross-plugin consistency.
+- **`stride-workflow` `description:`** — Amplified to enumerate the explicit user-intent phrases that should match the orchestrator: "claim a task", "work on the next stride task", "complete a stride task", "enrich a stride task", "decompose a goal", "create a goal or stride tasks". The phrase list is load-bearing for Copilot's matcher and should not be diluted.
+
+### Added
+
+- **`## STOP — orchestrator check` preamble** — Inserted as the first H2 of every sub-skill body (6 files). The 5-line block instructs an agent that arrived at a sub-skill directly to back out and invoke `stride:stride-workflow` instead. Wording is byte-identical to stride 1.10.0 so cross-plugin grep tooling stays consistent.
+- **`docs/HOOK_RESEARCH.md`** — Captures the research that decided whether stride 1.10.0's PreToolUse(Skill) gate ports to Copilot CLI. Concludes **PATH B: gate is NOT portable** with three independent reasons: Copilot CLI has no skill-activation hook event; the documented Copilot CLI tool-name vocabulary contains no `Skill` tool name (so a `matcher: "Skill"` entry has no event to bind to); Copilot CLI signals deny via stdout `permissionDecision` JSON rather than Claude Code's exit-2 convention.
+
+### Platform constraint
+
+The Layer-1 enforcement (the runtime PreToolUse(Skill) gate that stride 1.10.0 ships for Claude Code) is **not** available on Copilot CLI today. This release ships Layers 2 (description reframing) and 3 (STOP preamble) only. Both layers are prose-based and rely on Copilot's matcher and the agent's own attention to the STOP block in the skill body. If Copilot CLI later exposes a skill-activation event or a `Skill` tool name in its hook payloads, W295 and W296 (currently closed not-applicable) should be reopened to port the gate; the marker contract documented in stride 1.10.0 is intentionally identical so cross-plugin tooling can be shared without further design.
+
+### Source
+
+Motivated by the three-layer defense designed in `docs/plans/stride-plugin-feedback.md` (kanban repo) and ported from stride 1.10.0 (commit 5c30036).
+
+## [2.5.0] - 2026-04-16
+
+### Added
+
+- **`stride-completing-tasks` skill** — Surfaced `explorer_result` and `reviewer_result` in six places so agents cannot forget them: (1) the MANDATORY teaser at the top of the skill lists both as required alongside the hook results; (2) the pre-completion Verification Checklist asks whether both are included; (3) the primary API Request Format example includes both with dispatched-custom-agent shapes; (4) a new "Explorer/Reviewer Result Schema" section documents the dispatched shape, the skip shape, the five-value skip-reason enum (`no_subagent_support`, `small_task_0_1_key_files`, `trivial_change_docs_only`, `self_reported_exploration`, `self_reported_review`), the 40-character non-whitespace summary minimum, a 422 rejection example, and the feature-flag grace-period rollout; (5) the Completion Request Field Reference table lists both as required objects; (6) the Quick Reference Card's `REQUIRED BODY` includes both plus a SKIP FORM snippet.
+- **`stride-workflow` skill** — Step 7's Required Fields table and JSON payload example now include `explorer_result` and `reviewer_result`. A new "Explorer and Reviewer Result Rollout" section after "Workflow Telemetry" describes the grace-mode/strict-mode feature-flag phases and directs readers to `stride-completing-tasks` for the full shape (no schema duplication). Orchestrator prose explains that Steps 3 and 5 already capture the data needed to populate these fields in Step 7.
+
+## [2.4.0] - 2026-04-14
+
+### Added
+
+- **`stride-workflow` skill** — New "Workflow Telemetry: The `workflow_steps` Array" section documenting the six-entry step-name vocabulary (`explorer`, `planner`, `implementation`, `reviewer`, `after_doing`, `before_review`), per-step schema (`name`, `dispatched`, `duration_ms`, `reason`), full-dispatch and skipped-step examples, and rules for assembling the array. Step names are identical to the main stride plugin so Stride can aggregate telemetry across agents and plugins.
+- **`stride-completing-tasks` skill** — `workflow_steps` now appears in the verification checklist, the API Request Format example, the Completion Request Field Reference table, and the Quick Reference Card REQUIRED BODY. Added a Schema Reference paragraph pointing at `stride-workflow` as the source of truth for the array shape.
+
+### Changed
+
+- **`stride-completing-tasks` skill** — "Critical" note under the payload example now lists `workflow_steps` alongside the two hook-result fields as required. The API will reject completions that omit it.
+
+## [2.3.1] - 2026-04-14
+
+### Fixed
+
+- **`hooks/stride-hook.sh` and `hooks/stride-hook.ps1`** — Env-cache parsing now handles the `{"stdout": "<api-json-string>", ...}` wrapper shape that some hosts use when passing the Bash tool response to hooks. Prior versions only matched a bare JSON-encoded string or a raw object, so wrapped hosts silently fell through and `TASK_IDENTIFIER`/`TASK_TITLE` never got exported. `.stride.md` commands that referenced those vars (e.g. `git commit -m "Completed task $TASK_IDENTIFIER"`) then ran with empty values. The hook now tries the wrapper shape first, then falls back to the two legacy shapes.
+- **`hooks/stride-hook.sh`** — User commands no longer abort on unset env vars. The hook ran with `set -uo pipefail`, which propagated into each `eval` and killed the command before it executed if it referenced an unset variable. `set +uo pipefail` is now toggled around the `eval`.
+- **`hooks/test-stride-hook.sh`** — New regression test (6e) for the wrapped `tool_response.stdout` shape.
+
+## [2.3.0] - 2026-04-13
+
+### Changed
+
+- **`stride-claiming-tasks`** — Replaced soft "Recommended" orchestrator section with non-negotiable "YOUR NEXT STEP" gate demanding stride-workflow activation immediately after claiming. Added workflow violation warning to standalone mode.
+- **`stride-completing-tasks`** — Added "BEFORE CALLING COMPLETE: Verification Checklist" with 4 yes/no items covering orchestrator activation, codebase exploration, acceptance criteria review, and hook readiness.
+
+## [2.2.0] - 2026-04-13
+
+### Added
+
+- **`stride-workflow` skill** — Single orchestrator for the complete Stride task lifecycle adapted for GitHub Copilot. Walks through 9 steps: prerequisites, task discovery, claiming with manual hooks, codebase exploration via key_files, implementation, self-review against acceptance criteria, manual hook execution (after_doing + before_review), completion API call, and auto-loop for needs_review=false. No subagent references — all exploration and review is manual.
+
+### Changed
+
+- **`stride-claiming-tasks`** — Rewrote the `AUTOMATION NOTICE` section from speed-focused ("work continuously without asking") to process-focused ("the workflow IS the automation — every step exists because skipping it caused failures"). Added "Recommended: Use the Workflow Orchestrator" section pointing to stride-workflow. Renamed "MANDATORY: Next Skill After Claiming" to standalone mode. Removed "Custom Agent-Guided Implementation" section (absorbed by orchestrator).
+- **`stride-completing-tasks`** — Rewrote the `AUTOMATION NOTICE` section with identical process-over-speed reframing. Added "Arriving from stride-workflow" section. Renamed "MANDATORY: Previous Skill Before Completing" to standalone mode with stride-workflow as recommended path.
+- **`README.md`** — Added stride-workflow to skills list and workflow order diagram as the recommended entry point.
+
+## [2.1.0] - 2026-03-25
+
+### Changed
+
+- **`stride-claiming-tasks` skill** — Added "Copilot Plugin: Hooks Are Fully Automatic" section explaining that hooks.json handles hook execution automatically via stride-hook.sh. Agents should make API calls directly without manually executing .stride.md commands. Separated claiming workflow into "With Plugin (Automatic Hooks)" and "Without Plugin (Manual Hooks)" paths. Added new Common Mistake for manually executing hooks when the plugin is installed. Updated flowchart and Quick Reference Card with both paths.
+- **`stride-completing-tasks` skill** — Added identical automatic hooks guidance for completion hooks. PreToolUse auto-runs after_doing before the complete curl; PostToolUse auto-runs before_review after. Separated completion workflow into plugin and manual paths. Updated Common Mistakes and Quick Reference Card.
+
+## [2.0.0] - 2026-03-25
+
+### Breaking Changes
+
+- **Repository restructured** for `copilot plugin install` support. Skills and agents moved from `.github/` to root-level directories. The `.github/` auto-discovery installation method is no longer supported.
+
+### Added
+
+- **`hooks/hooks.json`** — Hook configuration that registers PreToolUse and PostToolUse hooks on Bash commands. Activates automatically when the plugin is installed via `copilot plugin install`.
+- **`hooks/stride-hook.sh`** — Bash hook script that intercepts Stride API calls and executes the corresponding `.stride.md` section (before_doing, after_doing, before_review, after_review). Includes platform detection that auto-delegates to PowerShell on native Windows.
+- **`hooks/stride-hook.ps1`** — PowerShell companion script for Windows compatibility. Uses ConvertFrom-Json/ConvertTo-Json for native JSON handling. Supports PowerShell 5.1+ and 7+.
+- **`hooks/test-stride-hook.sh`** — Bash test suite with 67 tests across 6 groups covering JSON extraction, .stride.md parsing, whitespace trimming, command list building, end-to-end integration, and edge cases.
+- **`hooks/test-stride-hook.ps1`** — PowerShell test suite with 70 assertions mirroring the bash test suite.
+- **Automatic Hook Execution documentation** in README.md — covers hook routing, .stride.md format, platform support, environment variable caching, and troubleshooting.
+
+### Changed
+
+- **Installation method** — Now installed via `copilot plugin install https://github.com/cheezy/stride-copilot` instead of copying the `.github/` directory. Supports `copilot plugin update` and `copilot plugin uninstall`.
+- **README.md** — Updated with new installation instructions, plugin management commands, and migration guide for v1.x users.
+
+### Added
+
+- **`plugin.json`** — Plugin manifest at repository root enabling `copilot plugin install` discovery. Contains metadata (name, version, author, license, keywords) and path references to `agents/` and `skills/` directories.
+
+### Removed
+
+- **`.github/copilot-instructions.md`** — No longer needed; the plugin system handles skill and agent discovery automatically.
+- **`.github/` directory** — All contents moved to root-level `agents/` and `skills/` directories.
+- **`.gitkeep` files** — Removed from all directories.
+
+### Migration
+
+To upgrade from v1.x:
+1. Remove copied `.github/skills/stride-*` and `.github/agents/` files from your project
+2. Run `copilot plugin install https://github.com/cheezy/stride-copilot`
+
+## [1.0.0] - 2026-03-24
+
+### Added
+
+**Skills (6 total):**
+- `stride-claiming-tasks` — Task discovery and claiming with before_doing hook execution
+- `stride-completing-tasks` — Task completion with after_doing and before_review hook execution
+- `stride-creating-tasks` — Work task and defect creation with proper field formats
+- `stride-creating-goals` — Goal and batch creation with correct root key and dependency format
+- `stride-enriching-tasks` — Automated codebase exploration to enrich sparse task specifications
+- `stride-subagent-workflow` — Decision matrix for dispatching custom agents based on task complexity
+
+**Custom Agents (4 total):**
+- `task-explorer` — Read-only codebase exploration after claiming a task
+- `task-reviewer` — Code review against acceptance criteria before completion
+- `task-decomposer` — Break goals into dependency-ordered child tasks
+- `hook-diagnostician` — Analyze hook failures and produce prioritized fix plans
+
+**Bridge File:**
+- `.github/copilot-instructions.md` — Always-active instructions ensuring Copilot activates the right skill at each workflow point
+
+**Documentation:**
+- README with installation, skill chain, and configuration guide
+- MIT license
+
+### Notes
+
+- All skills ported from the [Stride Claude Code plugin](https://github.com/cheezy/stride) with Copilot-specific adaptations
+- Tool references adapted from Claude Code syntax to tool-agnostic descriptions
+- Plan agent replaced with manual planning guidance (no Copilot equivalent)
+- All skills at `skills_version: 1.0`

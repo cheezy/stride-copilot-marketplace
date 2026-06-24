@@ -8,5 +8,12 @@
     "description": "Marketplace catalog for Stride GitHub Copilot CLI plugins",
     "version": "1.0.0"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "stride-copilot",
+      "description": "Task lifecycle skills and custom agents for Stride kanban: claiming, completing, and creating tasks and goals for AI agents in GitHub Copilot CLI.",
+      "version": "2.19.0",
+      "source": "./plugins/stride-copilot"
+    }
+  ]
 }
