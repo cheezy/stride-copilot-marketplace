@@ -46,6 +46,10 @@ The catalog lives at [`.github/plugin/marketplace.json`](.github/plugin/marketpl
 
 Every plugin `source` is an **in-repo relative path** (e.g. `./plugins/stride-copilot`) resolved from the repository root, so the plugin's files are vendored into this repo rather than referenced by an external URL. Keep each entry's `version` in sync with the vendored plugin's `plugin.json` version.
 
+## Maintenance
+
+Each plugin's files are vendored into this repo as a pinned copy, so a new upstream plugin release must be re-synced here before marketplace users receive it. See [RELEASE.md](RELEASE.md) for the step-by-step process — re-vendor `plugins/<name>/` (excluding `.git` and secrets), bump the `marketplace.json` plugin entry version to match the vendored `plugin.json`, update the `Plugins` table, verify, and push.
+
 ## License
 
 [MIT](LICENSE) © 2026 Jeff Morgan
