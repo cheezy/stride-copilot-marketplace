@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Marketplace catalog for Stride GitHub Copilot CLI plugins",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "plugins": [
     {
@@ -20,6 +20,12 @@
       "description": "Turn an idea into shipped Stride tasks from GitHub Copilot CLI: an interactive ideation session that produces a committed requirements doc, plus a stridify step that decomposes it into a Stride batch and posts it to the API.",
       "version": "0.2.0",
       "source": "./plugins/stride-copilot-ideation"
+    },
+    {
+      "name": "stride-security-review-copilot",
+      "description": "AI-powered security review for code changes via the /stride-security-review:security-review slash command: multi-language semantic vulnerability detection with SARIF output and CI severity gating.",
+      "version": "0.1.0",
+      "source": "./plugins/stride-security-review-copilot"
     }
   ]
 }

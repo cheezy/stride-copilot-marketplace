@@ -1,0 +1,122 @@
+# Reference CI workflow that runs the security-review-essentials skill on every pull request
+# and blocks the merge when a finding at or above the configured threshold is present.
+#
+# Drop this file into your own repo's .github/workflows/, set the ANTHROPIC_API_KEY secret,
+# and tune the FAIL_ON env var below. The workflow doubles as the plugin's own PR gate.
+#
+# TODO(copilot-port): this workflow currently installs and invokes the Claude Code CLI
+# (@anthropic-ai/claude-code from npm) and dispatches the plugin via the
+# /stride-security-review:security-review slash command (line ~68). When porting to
+# GitHub Copilot CLI, replace the "Install Claude Code CLI" step and the `claude -p`
+# invocation with the Copilot CLI equivalent for activating the security-review-essentials
+# skill with the same flag set (--json --fail-on <severity> --base <ref>). The JSON
+# post-check with jq and the exit-code gating logic are runtime-agnostic and stay as-is.
+
+name: security-review
+
+on:
+  workflow_dispatch:
+    inputs:
+      fail_on:
+        description: 'Severity threshold (critical | high | medium | low). Default: critical.'
+        required: false
+        default: critical
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Default threshold. Override via workflow_dispatch input or by editing this value.
+  FAIL_ON: ${{ inputs.fail_on || 'critical' }}
+
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # actions/checkout v4.2.2 — pin to commit SHA (the plugin flags floating tags).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # PR-against-base diffs need history past the merge-base; fetch enough.
+          fetch-depth: 0
+
+      # actions/setup-node v4.1.0
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
+        with:
+          node-version: '20'
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run security review
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Run the slash command in JSON mode with the configured threshold. The
+          # slash command issues `exit 1` itself when the threshold is tripped, but
+          # we ALSO post-check the JSON with jq so the gate is robust to claude -p
+          # exit-code propagation differences across CLI versions.
+          set +e
+          # Scope the diff to the PR's changes only (current branch relative to base).
+          # On non-PR triggers (workflow_dispatch on the default branch), github.base_ref
+          # is empty — fall back to the default diff-mode behavior (HEAD).
+          base_ref="${{ github.base_ref }}"
+          if [ -n "$base_ref" ]; then
+            base_flag=" --base origin/${base_ref}"
+          else
+            base_flag=""
+          fi
+          claude -p "/stride-security-review:security-review --json --fail-on ${FAIL_ON}${base_flag}" \
+            > review.json 2> review.stderr
+          claude_exit=$?
+          set -e
+
+          if [ ! -s review.json ]; then
+            echo "::error::security-review produced no JSON output. stderr:"
+            cat review.stderr >&2 || true
+            exit 2
+          fi
+
+          # Severity ordering (descending). The gate fails when any finding at or above
+          # FAIL_ON exists.
+          case "$FAIL_ON" in
+            critical) jq_filter='[.findings[]? | select(.severity == "critical")] | length' ;;
+            high)     jq_filter='[.findings[]? | select(.severity == "critical" or .severity == "high")] | length' ;;
+            medium)   jq_filter='[.findings[]? | select(.severity == "critical" or .severity == "high" or .severity == "medium")] | length' ;;
+            low)      jq_filter='[.findings[]? | select(.severity == "critical" or .severity == "high" or .severity == "medium" or .severity == "low")] | length' ;;
+            *)
+              echo "::error::FAIL_ON must be one of: critical, high, medium, low (got: ${FAIL_ON})"
+              exit 2
+              ;;
+          esac
+
+          gate_count=$(jq -r "$jq_filter" review.json)
+          echo "Findings at or above ${FAIL_ON}: ${gate_count}"
+          echo "gate_count=${gate_count}" >> "$GITHUB_OUTPUT"
+
+          # Fail the job if EITHER the JSON shows gated findings OR `claude -p` itself
+          # exited non-zero (which covers both gate trips [exit 1] and slash-command
+          # usage / dispatch errors [exit 2]). The "$claude_exit -ne 0" form catches all
+          # non-zero exits without conflating them with the no-output guard above.
+          if [ "$gate_count" -gt 0 ] || [ "$claude_exit" -ne 0 ]; then
+            echo "::error::Security review gate tripped (${gate_count} findings at/above ${FAIL_ON}; claude_exit=${claude_exit})."
+            exit 1
+          fi
+
+      # actions/upload-artifact v4.4.3 — keep the JSON for triage.
+      - name: Upload review artifact
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+        with:
+          name: security-review
+          path: |
+            review.json
+            review.stderr
+          retention-days: 14
