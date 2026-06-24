@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Marketplace catalog for Stride GitHub Copilot CLI plugins",
-    "version": "1.2.0"
+    "version": "1.3.0"
   },
   "plugins": [
     {
@@ -26,6 +26,12 @@
       "description": "AI-powered security review for code changes via the /stride-security-review:security-review slash command: multi-language semantic vulnerability detection with SARIF output and CI severity gating.",
       "version": "0.1.0",
       "source": "./plugins/stride-security-review-copilot"
+    },
+    {
+      "name": "stride-lite-copilot",
+      "description": "Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt — no API calls, no kanban auth.",
+      "version": "0.1.0",
+      "source": "./plugins/stride-lite-copilot"
     }
   ]
 }
