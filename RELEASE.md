@@ -56,3 +56,56 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 - [ ] README `Plugins` table version updated to match
 - [ ] Verify command prints `synced at X.Y.Z`
 - [ ] Secret scan clean, committed and pushed
+
+## Adding a new plugin
+
+The **Sync steps** above re-version a plugin that is *already* in the catalog. Adding a **new** plugin is a different flow: you create a fresh vendored copy and a new `plugins[]` entry, and — because the catalog's content changes — you bump `metadata.version`. Use this when registering a plugin for the first time (e.g. how `stride-copilot-ideation` was added alongside `stride-copilot`).
+
+Assume the new plugin `<name>` has a tagged release `vX.Y.Z`. From the repository root:
+
+1. **Vendor the new plugin tree** into a fresh `plugins/<name>/`, excluding `.git`, the gitignored `.stride/` runtime dir, and any secret files:
+
+   ```bash
+   rsync -a --delete \
+     --exclude='.git' \
+     --exclude='.stride' \
+     --exclude='.stride_auth.md' \
+     --exclude='.env' \
+     --exclude='.env.local' \
+     --exclude='*.local' \
+     --exclude='.stride-env-cache' \
+     --exclude='.stride-changed-files.json' \
+     /path/to/<name>/ plugins/<name>/
+   ```
+
+   Never copy `.git`, the `.stride/` runtime dir, or any secret file — this repo is **public**.
+
+2. **Add a new `plugins[]` entry** to `.github/plugin/marketplace.json` with `name`, a concise one-line `description`, `version` (`X.Y.Z`, equal to the vendored `plugin.json` version), and `source` (`./plugins/<name>`). Leave the existing entries untouched.
+
+3. **Bump `metadata.version`** (a minor bump) — adding a plugin changes the catalog content. This is the key difference from a version sync, which leaves `metadata.version` alone.
+
+4. **Add a README `Plugins` table row** for the new plugin, matching the entry's version and description.
+
+5. **Verify** every entry's `version` equals its vendored `plugin.json` version and every `source` resolves:
+
+   ```bash
+   node -e "const m=JSON.parse(require('fs').readFileSync('.github/plugin/marketplace.json')); m.plugins.forEach(p=>{const v=JSON.parse(require('fs').readFileSync(p.source.replace(/^\.\//,'')+'/plugin.json')).version; if(p.version!==v) throw new Error(p.name+' entry '+p.version+' != vendored '+v); require('fs').accessSync(p.source.replace(/^\.\//,'')+'/plugin.json')}); console.log('all '+m.plugins.length+' plugins resolve and versions match')"
+   ```
+
+6. **Scan for secrets**, then commit and push:
+
+   ```bash
+   git grep -nI 'BEGIN .*PRIVATE KEY\|ghp_\|github_pat_' $(git rev-list --all) | head   # expect empty
+   git add -A
+   git commit -m "Add <name> as a marketplace plugin"
+   git push origin main
+   ```
+
+### Add-a-plugin checklist
+
+- [ ] New plugin vendored into `plugins/<name>/`, no `.git` / `.stride` / secret files copied
+- [ ] New `plugins[]` entry added (existing entries untouched), entry `version` == vendored `plugin.json` version
+- [ ] `metadata.version` bumped (minor)
+- [ ] README `Plugins` table row added
+- [ ] Verify command prints `all N plugins resolve and versions match`
+- [ ] Secret scan clean, committed and pushed
