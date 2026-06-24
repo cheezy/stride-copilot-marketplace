@@ -35,6 +35,7 @@ copilot plugin uninstall stride-copilot         # Remove a plugin
 | [`stride-copilot-ideation`](plugins/stride-copilot-ideation) | 0.2.0 | Turn an idea into shipped Stride tasks from GitHub Copilot CLI: an interactive ideation session that produces a committed requirements doc, plus a stridify step that decomposes it into a Stride batch and posts it to the API. |
 | [`stride-security-review-copilot`](plugins/stride-security-review-copilot) | 0.1.0 | AI-powered security review for code changes via the `/stride-security-review:security-review` slash command: multi-language semantic vulnerability detection with SARIF output and CI severity gating. |
 | [`stride-lite-copilot`](plugins/stride-lite-copilot) | 0.1.0 | Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt — no API calls, no kanban auth. |
+| [`launchdarkly-copilot`](plugins/launchdarkly-copilot) | 0.1.0 | Generate correct, testable, and removable LaunchDarkly feature-flag code from GitHub Copilot — Java server SDK plus the TypeScript SDKs (Node server, client-side JS, React) with scaffolding, flag-removal skills, and an anti-pattern review agent. |
 
 The plugin list above is kept in sync with the `plugins[]` array in [`.github/plugin/marketplace.json`](.github/plugin/marketplace.json).
 
