@@ -1,0 +1,15 @@
+{
+  "name": "launchdarkly-copilot",
+  "description": "Generate correct, testable, and removable LaunchDarkly feature-flag code from GitHub Copilot — covers the Java server SDK and the TypeScript SDKs (Node server, client-side JS, React) with knowledge skills, scaffolding and flag-removal skills, and an anti-pattern review agent. A Copilot port of the launchdarkly Claude Code plugin.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Jeff Morgan",
+    "email": "cheezy@letstango.ca"
+  },
+  "homepage": "https://github.com/cheezy/launchdarkly-copilot",
+  "repository": "https://github.com/cheezy/launchdarkly-copilot",
+  "license": "MIT",
+  "keywords": ["launchdarkly", "feature-flags", "feature-toggles", "java", "typescript", "react", "copilot"],
+  "agents": "agents/",
+  "skills": ["skills/"]
+}

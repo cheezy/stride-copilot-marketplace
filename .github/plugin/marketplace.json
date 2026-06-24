@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Marketplace catalog for Stride GitHub Copilot CLI plugins",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "plugins": [
     {
@@ -32,6 +32,12 @@
       "description": "Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt — no API calls, no kanban auth.",
       "version": "0.1.0",
       "source": "./plugins/stride-lite-copilot"
+    },
+    {
+      "name": "launchdarkly-copilot",
+      "description": "Generate correct, testable, and removable LaunchDarkly feature-flag code from GitHub Copilot — Java server SDK plus the TypeScript SDKs (Node server, client-side JS, React) with scaffolding, flag-removal skills, and an anti-pattern review agent.",
+      "version": "0.1.0",
+      "source": "./plugins/launchdarkly-copilot"
     }
   ]
 }
