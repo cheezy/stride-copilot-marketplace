@@ -1,0 +1,12 @@
+{
+  "name": "stride-copilot-marketplace",
+  "owner": {
+    "name": "Jeff Morgan",
+    "email": "cheezy@letstango.ca"
+  },
+  "metadata": {
+    "description": "Marketplace catalog for Stride GitHub Copilot CLI plugins",
+    "version": "1.0.0"
+  },
+  "plugins": []
+}
