@@ -4,6 +4,23 @@ All notable changes to the `stride-copilot-ideation` plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-26
+
+Ports the upstream [`cheezy/stride-ideation`](https://github.com/cheezy/stride-ideation) **challenge gate** to GitHub Copilot CLI — a design stress-test that runs after the round-4 premortem (and the lean-startup round-5 MVP-design batch) and before the advisory reviewer pass. Additive and profile-independent; it never blocks the write.
+
+### Added
+
+- **Challenge gate — four components (`## Challenge gate` in `skills/stride-ideation/SKILL.md`, surfaced via the Copilot CLI selection primitive in `skills/stride-ideation-ideate/SKILL.md`).** After the premortem and before the reviewer pass, the skill stress-tests the assembled draft with four components run in order: (a) an **assumption-confidence audit** rating every Assumptions entry `high`/`medium`/`low`; (b) a **blind-spot scan** for unstated dependencies, omitted stakeholders, untested edge cases, and failure modes the premortem missed; (c) **two distinct alternative approaches**; and (d) a **cost / risk / complexity / timeline trade-off** comparison of the proposed design against the two alternatives. Findings are surfaced as a single multi-select decision — one option per low-confidence assumption, material blind spot, and alternative — with an explicit **"Challenge nothing — write as-is"** choice, feeding at most one refinement round. The gate is advisory and profile-independent (identical under lean / product / discovery / lean-startup), runs even on `--continue`, and never blocks the write. Confidence ratings fold into the Assumptions entries in place; the blind spots, the two alternatives, and the trade-off table fold into a new optional **Design challenge** section (not one of the seven hard-gated sections, and not surfaced in the round recap). Adapted to the Copilot CLI question/selection primitive — never Claude Code's `AskUserQuestion`.
+
+### Test coverage
+
+- **`lib/test-challenge-gate.sh` + `lib/test-challenge-gate.ps1`** (8 + 8) — assert the challenge-gate output contract against the new fixture `fixtures/2026-05-12T120300-saved-filters-challenge-gate-requirements.md`: a `## Design challenge` section, at least two alternatives, a Cost/Risk/Complexity/Timeline trade-off table, and per-assumption `(high)`/`(medium)`/`(low)` confidence ratings scoped to the Assumptions section, plus three negative controls (no alternatives, unrated assumptions, prose-without-table).
+- **`lib/run_smoke_test.sh` (and `.ps1`) gain Stage 6** (challenge-gate fixture shape, four assertions); the live POST stage is renumbered to Stage 7. The smoke suite is now **14/14** (was 10/10).
+
+### Migration
+
+- **No migration on the happy path.** The challenge gate is an additive advisory step — it never blocks the write, runs identically under every profile, and always offers a "Challenge nothing — write as-is" path so any session can proceed untouched. Existing `--continue` docs that never ran the gate get it on their next refinement.
+
 ## [0.2.1] - 2026-06-26
 
 ### Security

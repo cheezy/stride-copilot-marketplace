@@ -189,11 +189,60 @@ if ($renderedText -match 'G999  Smoke test goal' -and
     Fail "render output not as expected" $renderedText
 }
 
-# --- Stage 6: LIVE POST (only if -Live) ------------------------------------
+# --- Stage 6: challenge-gate fixture shape ---------------------------------
+
+Write-Host ''
+Write-Host 'Stage 6: challenge-gate fixture shape'
+$gateFixture = Join-Path $PluginRoot 'fixtures/2026-05-12T120300-saved-filters-challenge-gate-requirements.md'
+if (Test-Path -LiteralPath $gateFixture) {
+    $gateLines = Get-Content -LiteralPath $gateFixture
+
+    if ($gateLines | Where-Object { $_ -match '^## Design challenge\s*$' }) {
+        Pass "challenge-gate fixture has a '## Design challenge' section"
+    } else {
+        Fail "challenge-gate fixture is missing the '## Design challenge' section"
+    }
+
+    $altCount = @($gateLines | Where-Object { $_ -match '\*\*Alternative [A-Z]' }).Count
+    if ($altCount -ge 2) {
+        Pass "Design challenge names at least two alternatives"
+    } else {
+        Fail "Design challenge has fewer than two alternatives"
+    }
+
+    $dimsOk = $true
+    foreach ($dim in @('Cost', 'Risk', 'Complexity', 'Timeline')) {
+        if (-not ($gateLines | Where-Object { $_ -match "(?i)^\s*\|\s*$dim\s*\|" })) {
+            $dimsOk = $false
+        }
+    }
+    if ($dimsOk) {
+        Pass "trade-off comparison covers cost, risk, complexity, and timeline"
+    } else {
+        Fail "trade-off comparison is missing one of the four dimensions"
+    }
+
+    $inAssumptions = $false
+    $hasRating = $false
+    foreach ($line in $gateLines) {
+        if ($line -match '^## Assumptions\s*$') { $inAssumptions = $true; continue }
+        if ($inAssumptions -and $line -match '^## ') { $inAssumptions = $false }
+        if ($inAssumptions -and $line -match '\((high|medium|low)\)') { $hasRating = $true }
+    }
+    if ($hasRating) {
+        Pass "Assumptions section shows per-assumption confidence ratings"
+    } else {
+        Fail "no (high)/(medium)/(low) confidence ratings under Assumptions"
+    }
+} else {
+    Fail "challenge-gate fixture not found" $gateFixture
+}
+
+# --- Stage 7: LIVE POST (only if -Live) ------------------------------------
 
 if ($Mode -eq 'live') {
     Write-Host ''
-    Write-Host 'Stage 6: LIVE POST to the Stride API (NOTE: creates real tasks)'
+    Write-Host 'Stage 7: LIVE POST to the Stride API (NOTE: creates real tasks)'
     $projectDir = if ($env:CLAUDE_PROJECT_DIR) { $env:CLAUDE_PROJECT_DIR } else { (Get-Location).Path }
     $authFile = Join-Path $projectDir '.stride_auth.md'
     if (-not (Test-Path -LiteralPath $authFile)) {
