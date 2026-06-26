@@ -18,7 +18,7 @@
     {
       "name": "stride-copilot-ideation",
       "description": "Turn an idea into shipped Stride tasks from GitHub Copilot CLI: an interactive ideation session that produces a committed requirements doc, plus a stridify step that decomposes it into a Stride batch and posts it to the API.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": "./plugins/stride-copilot-ideation"
     },
     {
