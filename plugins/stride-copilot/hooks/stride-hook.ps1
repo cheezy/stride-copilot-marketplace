@@ -71,6 +71,53 @@ switch ($Phase) {
 # Not a Stride API call — exit cleanly
 if (-not $HookName) { exit 0 }
 
+# Compute the claim-time dirty baseline (W1516). Mirror of
+# stride-hook.sh:_compute_dirty_baseline: returns base64 of newline-joined
+# "<blobsha>`t<path>" lines for every path git currently reports dirty
+# (modified/staged/untracked-not-ignored), where the sha is git's content hash
+# of the CURRENT file. Only hashes + paths — never file contents. Quoted
+# (special-char) paths are skipped (they fall through to being captured). Empty
+# string on any failure (git absent, not a repo, clean tree).
+function Get-DirtyBaseline {
+    param([string]$Dir)
+    try {
+        $status = & git -C $Dir status --porcelain 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $status) { return '' }
+        $lines = @()
+        foreach ($entry in @($status)) {
+            if ($entry.Length -lt 4) { continue }
+            $p = $entry.Substring(3)
+            if ($p -match ' -> ') { $p = ($p -split ' -> ')[-1] }
+            if ($p.StartsWith('"')) { continue }
+            if (-not (Test-Path -LiteralPath (Join-Path $Dir $p) -PathType Leaf)) { continue }
+            $sha = & git -C $Dir hash-object $p 2>$null
+            if ($LASTEXITCODE -eq 0 -and $sha) { $lines += "$(($sha | Out-String).Trim())`t$p" }
+        }
+        if ($lines.Count -eq 0) { return '' }
+        return [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))
+    } catch {
+        return ''
+    }
+}
+
+# Decode $env:TASK_DIRTY_BASELINE (base64 of "<sha>`t<path>" lines) into a
+# path -> sha hashtable (W1516). Empty hashtable when unset or undecodable.
+function Get-ClaimDirtyBaselineMap {
+    $map = @{}
+    $blB64 = [System.Environment]::GetEnvironmentVariable('TASK_DIRTY_BASELINE', 'Process')
+    if (-not $blB64) { return $map }
+    try {
+        $txt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($blB64))
+        foreach ($line in ($txt -split "`n")) {
+            $ti = $line.IndexOf("`t")
+            if ($ti -gt 0) { $map[$line.Substring($ti + 1)] = $line.Substring(0, $ti) }
+        }
+    } catch {
+        $map = @{}
+    }
+    return $map
+}
+
 # --- Environment variable caching ---
 # After a successful claim (before_doing), extract task metadata from the API
 # response and cache it. All subsequent hooks load the cache so .stride.md
@@ -178,6 +225,12 @@ if ($HookName -eq 'before_doing') {
                 $baseRef = ''
             }
 
+            # (W1516) Snapshot the already-dirty paths at claim time, base64 in a
+            # single safe env-cache line (many paths, no special-char breakage,
+            # only hashes — never file contents). The upload filter subtracts it
+            # so unrelated pre-existing edits are not misattributed to the agent.
+            $dirtyBaselineB64 = Get-DirtyBaseline -Dir $ProjectDir
+
             if ($taskJson) {
                 $cacheLines = @(
                     "TASK_ID=$($taskJson.id)"
@@ -187,6 +240,7 @@ if ($HookName -eq 'before_doing') {
                     "TASK_COMPLEXITY=$($taskJson.complexity)"
                     "TASK_PRIORITY=$($taskJson.priority)"
                     "TASK_BASE_REF=$baseRef"
+                    "TASK_DIRTY_BASELINE=$dirtyBaselineB64"
                 )
                 $cacheLines | Set-Content -Path $EnvCache -Encoding UTF8
                 # Clear any stale per-file diff snapshot and upload-state from a
@@ -201,11 +255,14 @@ if ($HookName -eq 'before_doing') {
                 # snapshot — otherwise a base ref recorded under a previous claim
                 # survives. Existing TASK_ identity lines are preserved so a later
                 # completion can still recover TASK_ID.
+                # Drop the previous claim's TASK_BASE_REF AND TASK_DIRTY_BASELINE
+                # so a stale baseline cannot survive into this claim, then
+                # re-write both fresh.
                 $preserved = @()
                 if (Test-Path $EnvCache) {
-                    $preserved = @(Get-Content $EnvCache -Encoding UTF8 | Where-Object { $_ -notmatch '^TASK_BASE_REF=' })
+                    $preserved = @(Get-Content $EnvCache -Encoding UTF8 | Where-Object { $_ -notmatch '^TASK_BASE_REF=' -and $_ -notmatch '^TASK_DIRTY_BASELINE=' })
                 }
-                $newLines = $preserved + "TASK_BASE_REF=$baseRef"
+                $newLines = $preserved + "TASK_BASE_REF=$baseRef" + "TASK_DIRTY_BASELINE=$dirtyBaselineB64"
                 $newLines | Set-Content -Path $EnvCache -Encoding UTF8
                 Remove-Item -Force (Join-Path $ProjectDir '.stride-changed-files.json') -ErrorAction SilentlyContinue
                 Remove-Item -Force (Join-Path $ProjectDir '.stride-diff-upload-state') -ErrorAction SilentlyContinue
@@ -293,8 +350,24 @@ function Invoke-ChangedFilesUpload {
         # falls through to the raw bytes unchanged.
         try {
             $entries = @([System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json)
+            # (W1516) Alongside the D67 self-artifact exclusion, drop entries
+            # that were already dirty at claim time AND whose content is
+            # unchanged since — pre-existing, task-untouched edits. A baselined
+            # path whose CURRENT git hash differs (the task edited it further) is
+            # kept, as is any path absent from the baseline.
+            $baselineMap = Get-ClaimDirtyBaselineMap
             $filtered = @($entries | Where-Object {
-                $_.path -ne '.stride-diff-upload-state' -and $_.path -ne '.stride-changed-files.json'
+                $p = $_.path
+                if ($p -eq '.stride-diff-upload-state' -or $p -eq '.stride-changed-files.json') { return $false }
+                if ($baselineMap.ContainsKey($p)) {
+                    $cur = ''
+                    try {
+                        $h = & git -C $ProjectDir hash-object $p 2>$null
+                        if ($LASTEXITCODE -eq 0 -and $h) { $cur = ($h | Out-String).Trim() }
+                    } catch { $cur = '' }
+                    if ($cur -ne '' -and $cur -eq $baselineMap[$p]) { return $false }
+                }
+                return $true
             })
             if ($filtered.Count -ne $entries.Count) {
                 # Pipe (not -InputObject) so an array is not double-wrapped into
@@ -426,6 +499,39 @@ function Invoke-SelfHealChangedFilesUpload {
     Write-DiffUploadState -TaskId $taskId -HttpCode $httpCode
 }
 
+# Per-hook timeout budget in seconds (W1513), keyed on the section name. Mirror
+# of stride-hook.sh:_hook_timeout_secs: after_doing = 120; before_doing /
+# before_review / after_review / after_goal (and any unrecognized section) = 60.
+# Every inner limit sits well under the 300s outer host budget in hooks.json. A
+# positive-integer $env:STRIDE_HOOK_TIMEOUT_SECS overrides the budget for every
+# section (used by the suites to exercise the timeout path without waiting out
+# the real limits, and as an advanced-tuning knob); unset/non-numeric is ignored.
+function Get-HookTimeoutSecs {
+    param([string]$Section)
+    $override = $env:STRIDE_HOOK_TIMEOUT_SECS
+    if ($override -match '^[0-9]+$' -and [int]$override -gt 0) {
+        return [int]$override
+    }
+    switch ($Section) {
+        'after_doing' { return 120 }
+        default       { return 60 }
+    }
+}
+
+# True when a line ends with a shell line-continuation backslash (W1515).
+# Mirror of stride-hook.sh:_has_line_continuation: a trailing backslash
+# continues onto the next line only when unescaped — the run of trailing
+# backslashes has ODD length. An even run is a literal backslash and does not
+# continue. Trailing whitespace is significant (a backslash + space does not
+# continue); leading whitespace was already trimmed by the caller.
+function Test-LineContinuation {
+    param([string]$Line)
+    $n = 0
+    $i = $Line.Length - 1
+    while ($i -ge 0 -and $Line[$i] -eq '\') { $n++; $i-- }
+    return (($n % 2) -eq 1)
+}
+
 # --- Parse and execute one .stride.md hook section ---
 # Mirror of stride-hook.sh:run_stride_section. Takes a section name and:
 #   1. Parses the first `## <section>` ```bash``` block from .stride.md.
@@ -481,13 +587,32 @@ function Invoke-StrideSection {
         return 0
     }
 
+    # Build the command list, joining backslash line-continuations (W1515) so a
+    # multi-line command runs as ONE command. Blank/comment skipping applies
+    # only when starting a fresh command ($secPending empty); a line pulled in
+    # by a continuation is appended verbatim. Non-continued input reduces to the
+    # pre-W1515 behavior, so single-line commands parse identically.
     $secCmdList = @()
+    $secPending = ''
     foreach ($cmd in ($secCommands -split "`n")) {
         $trimmedCmd = $cmd.TrimStart()
-        if (-not $trimmedCmd) { continue }
-        if ($trimmedCmd.StartsWith('#')) { continue }
+        if ($secPending -ne '') {
+            $trimmedCmd = $secPending + $trimmedCmd
+            $secPending = ''
+        } else {
+            if (-not $trimmedCmd) { continue }
+            if ($trimmedCmd.StartsWith('#')) { continue }
+        }
+        if (Test-LineContinuation $trimmedCmd) {
+            # Drop the single continuation backslash; hold the rest for the next
+            # line (literal backslashes preceding it are preserved).
+            $secPending = $trimmedCmd.Substring(0, $trimmedCmd.Length - 1)
+            continue
+        }
         $secCmdList += $trimmedCmd
     }
+    # Flush a dangling continuation (final fenced line ended with a backslash).
+    if ($secPending -ne '') { $secCmdList += $secPending }
 
     if ($secCmdList.Count -eq 0) {
         Invoke-FinalizeAfterDoing
@@ -510,7 +635,16 @@ function Invoke-StrideSection {
     # commands_output array (D65). Keeps passing-gate output off stderr so it is
     # not rendered under a false hook-error label.
     $secCmdOutputs = @()
+    # $secStartTime (whole seconds) drives the W1513 per-hook timeout elapsed
+    # math; $secStopwatch (W1514) drives the millisecond duration_ms reported in
+    # the success JSON — independent clocks so timeout budgeting keeps its cheap
+    # second granularity while telemetry gains real sub-second fidelity.
     $secStartTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $secStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    # Per-hook timeout budget (W1513): the whole section shares $secHookLimit
+    # seconds; each command waits only for the time REMAINING so the section
+    # total can never exceed the limit (nor the 300s host ceiling).
+    $secHookLimit = Get-HookTimeoutSecs $Section
     $secCmdIndex = 0
     $secCmdTotal = $secCmdList.Count
 
@@ -539,11 +673,39 @@ function Invoke-StrideSection {
             # can emit that much warning text.
             $secOutTask = $proc.StandardOutput.ReadToEndAsync()
             $secErrTask = $proc.StandardError.ReadToEndAsync()
-            $proc.WaitForExit()
+
+            # Enforce the per-hook budget (W1513). Each command waits only for
+            # the time REMAINING in the section budget. Unlike bash — which needs
+            # an external timeout/gtimeout and degrades to no enforcement when
+            # neither exists — .NET's WaitForExit(ms) is always available, so
+            # PowerShell always enforces. On expiry the child (and its tree) is
+            # killed and the command is treated as a genuine failure with exit
+            # code 124, matching the bash twin and preserving the after_doing
+            # exit-2 block (a timeout is a failure, not a silent pass).
+            $secElapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $secStartTime
+            $secRemainingMs = [int]([math]::Max(1, ($secHookLimit - $secElapsed))) * 1000
+            $secTimedOut = $false
+            if ($proc.WaitForExit($secRemainingMs)) {
+                # Second argless WaitForExit ensures the async stdout/stderr
+                # reads are fully flushed before we read their .Result.
+                $proc.WaitForExit()
+            } else {
+                $secTimedOut = $true
+                try { $proc.Kill($true) } catch { try { $proc.Kill() } catch { } }
+                try { $proc.WaitForExit() } catch { }
+            }
             Set-Content -Path $secStdoutFile -Value $secOutTask.Result -Encoding UTF8 -NoNewline
             Set-Content -Path $secStderrFile -Value $secErrTask.Result -Encoding UTF8 -NoNewline
+            # Make a budget timeout self-describing (mirror of the bash twin's
+            # exit-124 annotation) so the failed-JSON and fd2 message name the
+            # cause; the synthesized exit code stays 124 for the diagnostician.
+            if ($secTimedOut) {
+                Add-Content -Path $secStderrFile -Encoding UTF8 `
+                    -Value "stride-hook: $Section hook command exceeded its ${secHookLimit}s per-hook timeout budget"
+            }
 
-            if ($proc.ExitCode -eq 0) {
+            $secCmdCode = if ($secTimedOut) { 124 } else { $proc.ExitCode }
+            if ($secCmdCode -eq 0) {
                 $secCompletedCmds += $execTrimmed
                 # Do NOT write the passing command's output to stderr (D65):
                 # Claude Code renders any hook stderr under a red error label
@@ -569,7 +731,7 @@ function Invoke-StrideSection {
                     stderr  = $secOkStderr
                 }
             } else {
-                $secCmdExit = $proc.ExitCode
+                $secCmdExit = $secCmdCode
                 $secCmdStdout = ''
                 $secCmdStderr = ''
                 if (Test-Path $secStdoutFile) {
@@ -622,15 +784,15 @@ function Invoke-StrideSection {
     # for "after_goal" does not retrigger).
     Invoke-FinalizeAfterDoing
 
-    $secEndTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    $secDuration = $secEndTime - $secStartTime
+    $secStopwatch.Stop()
+    $secDurationMs = [int]$secStopwatch.Elapsed.TotalMilliseconds
 
     $successResult = [ordered]@{
         hook               = $Section
         status             = 'success'
         commands_completed = $secCompletedCmds
         commands_output    = @($secCmdOutputs)
-        duration_seconds   = $secDuration
+        duration_ms        = $secDurationMs
     }
     [Console]::Out.WriteLine(($successResult | ConvertTo-Json -Depth 5 -Compress))
 
@@ -688,6 +850,71 @@ function Test-AfterGoalInResponse {
     return $false
 }
 
+# Export the server-supplied `env` object from the response's after_goal hook
+# entry (W1512). Mirror of stride-hook.sh:export_after_goal_env. The
+# stride-workflow SKILL promises GOAL_ID/GOAL_IDENTIFIER/GOAL_TITLE/
+# GOAL_DESCRIPTION (plus BOARD_*/COLUMN_*/AGENT_NAME when present) reach the
+# after_goal child process, but nothing extracted them — so a `## after_goal`
+# section referencing $env:GOAL_ID ran with it empty. This peels the response
+# the same way Test-AfterGoalInResponse does, selects the FIRST after_goal hook
+# entry's `env` object, and sets each key VERBATIM into the process
+# environment so the subsequent Invoke-StrideSection 'after_goal' (which runs
+# the section via `bash -c`, inheriting the process env) sees them.
+#
+# Contract: values are copied verbatim; NEVER invented, derived, or looked up
+# client-side. A missing env object (or missing keys) is a clean no-op.
+function Set-AfterGoalEnv {
+    param([string]$InputJson)
+
+    if (-not $InputJson) { return }
+
+    try {
+        $parsed = $InputJson | ConvertFrom-Json
+    } catch {
+        return
+    }
+
+    if ($parsed.PSObject.Properties.Name -notcontains 'tool_response') { return }
+    $resp = $parsed.tool_response
+    if (-not $resp) { return }
+
+    $payload = $null
+
+    if ($resp -is [PSCustomObject] -and $resp.PSObject.Properties.Name -contains 'stdout') {
+        try { $payload = $resp.stdout | ConvertFrom-Json } catch { $payload = $null }
+    }
+
+    if ($null -eq $payload -and $resp -is [string]) {
+        try { $payload = $resp | ConvertFrom-Json } catch { $payload = $null }
+    }
+
+    if ($null -eq $payload -and $resp -is [PSCustomObject]) {
+        $payload = $resp
+    }
+
+    if ($null -eq $payload) { return }
+    if (-not ($payload.PSObject.Properties.Name -contains 'hooks')) { return }
+    if ($null -eq $payload.hooks) { return }
+
+    $agEntry = $null
+    foreach ($entry in @($payload.hooks)) {
+        if ($entry -and ($entry.PSObject.Properties.Name -contains 'name') -and $entry.name -eq 'after_goal') {
+            $agEntry = $entry
+            break
+        }
+    }
+    if ($null -eq $agEntry) { return }
+    if (-not ($agEntry.PSObject.Properties.Name -contains 'env')) { return }
+    $agEnv = $agEntry.env
+    if ($null -eq $agEnv) { return }
+    if (-not ($agEnv -is [PSCustomObject])) { return }
+
+    foreach ($prop in $agEnv.PSObject.Properties) {
+        $val = if ($null -eq $prop.Value) { '' } else { [string]$prop.Value }
+        [System.Environment]::SetEnvironmentVariable($prop.Name, $val, 'Process')
+    }
+}
+
 # --- (W1094) Changed-files upload self-heal ---
 # Runs only for before_review (gated internally). On a FRESH timeout budget it
 # re-verifies the after_doing upload via .stride-diff-upload-state and re-PUTs
@@ -712,6 +939,11 @@ if ($primaryRc -ne 0) {
 # the agent to forward via PATCH /api/tasks/:goal_id/after_goal.
 if ($Phase -eq 'post' -and ($Command -match '/api/tasks/[^/]+/(complete|mark_reviewed)')) {
     if (Test-AfterGoalInResponse -InputJson $Input) {
+        # (W1512) Export the server-supplied GOAL_*/BOARD_*/COLUMN_*/AGENT_NAME
+        # env vars from the after_goal hook entry BEFORE the section runs, so an
+        # `## after_goal` command referencing $GOAL_ID/$GOAL_IDENTIFIER/etc. sees
+        # the values the server sent (verbatim; never derived client-side).
+        Set-AfterGoalEnv -InputJson $Input
         $null = Invoke-StrideSection -Section 'after_goal'
     }
 }

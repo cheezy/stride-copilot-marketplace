@@ -1593,6 +1593,62 @@ STRIDE
   assert_exit "8e: end-to-end after_goal on mark_reviewed exits 0" 0 "$AG_E2E_RC_MR"
   assert_contains "8e: mark_reviewed runs after_review" "after_review_ran" "$AG_E2E_OUT_MR"
   assert_contains "8e: mark_reviewed runs after_goal" "after_goal_ran" "$AG_E2E_OUT_MR"
+
+  # --- W1512: after_goal hook.env forwarding ---
+  # Helper: build a tool_input + tool_response payload whose after_goal hook
+  # entry carries a server-supplied `env` object. Mirrors ag_e2e_input but
+  # attaches env to the after_goal entry so we can assert the bridge exports it.
+  ag_e2e_input_env() {
+    local primary_command="$1"
+    local env_json="$2"
+    local inner_json
+    inner_json=$(jq -nc --argjson env "$env_json" \
+      '{data: {id: 99}, hooks: [{name: "after_review"}, {name: "after_goal", env: $env}]}')
+    jq -nc \
+      --arg cmd "$primary_command" \
+      --arg inner "$inner_json" \
+      '{tool_input: {command: $cmd}, tool_response: {stdout: $inner}}'
+  }
+
+  # Fixture whose after_goal section echoes every forwarded variable so the
+  # assertions can confirm each reached the section process environment.
+  AG_ENV_PROJ="$TMPDIR_TEST/after-goal-env"
+  mkdir -p "$AG_ENV_PROJ"
+  cat > "$AG_ENV_PROJ/.stride.md" << 'STRIDE'
+## after_goal
+```bash
+echo "goal_id=$GOAL_ID id=$GOAL_IDENTIFIER title=$GOAL_TITLE desc=$GOAL_DESCRIPTION board=$BOARD_ID col=$COLUMN_ID agent=$AGENT_NAME"
+```
+STRIDE
+
+  # 8f: a stubbed hook.env with GOAL_*/BOARD_*/COLUMN_*/AGENT_NAME reaches the
+  # after_goal section environment, copied VERBATIM (spaces preserved).
+  AG_ENV_INPUT=$(ag_e2e_input_env \
+    "curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete" \
+    '{"GOAL_ID":"4687","GOAL_IDENTIFIER":"G4687","GOAL_TITLE":"Ship the bridge","GOAL_DESCRIPTION":"Wire GOAL_* through","BOARD_ID":"55","COLUMN_ID":"128","AGENT_NAME":"Claude Opus 4.8"}')
+  AG_ENV_OUT=$(echo "$AG_ENV_INPUT" | CLAUDE_PROJECT_DIR="$AG_ENV_PROJ" \
+    bash "$HOOK_SCRIPT" post 2>&1)
+  AG_ENV_RC=$?
+  assert_exit "8f: after_goal env-export exits 0" 0 "$AG_ENV_RC"
+  assert_contains "8f: GOAL_ID exported verbatim" "goal_id=4687" "$AG_ENV_OUT"
+  assert_contains "8f: GOAL_IDENTIFIER exported verbatim" "id=G4687" "$AG_ENV_OUT"
+  assert_contains "8f: GOAL_TITLE with spaces exported verbatim" "title=Ship the bridge" "$AG_ENV_OUT"
+  assert_contains "8f: GOAL_DESCRIPTION exported verbatim" "desc=Wire GOAL_* through" "$AG_ENV_OUT"
+  assert_contains "8f: BOARD_ID exported verbatim" "board=55" "$AG_ENV_OUT"
+  assert_contains "8f: COLUMN_ID exported verbatim" "col=128" "$AG_ENV_OUT"
+  assert_contains "8f: AGENT_NAME with spaces exported verbatim" "agent=Claude Opus 4.8" "$AG_ENV_OUT"
+
+  # 8g: an after_goal entry with NO env object is a clean no-op — the section
+  # still runs (exit 0) with the GOAL_* vars empty, never an error.
+  AG_NOENV_INPUT=$(ag_e2e_input \
+    "curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete" \
+    '[{"name":"after_review"},{"name":"after_goal"}]')
+  AG_NOENV_OUT=$(echo "$AG_NOENV_INPUT" | CLAUDE_PROJECT_DIR="$AG_ENV_PROJ" \
+    bash "$HOOK_SCRIPT" post 2>&1)
+  AG_NOENV_RC=$?
+  assert_exit "8g: after_goal missing env is a clean no-op (exit 0)" 0 "$AG_NOENV_RC"
+  assert_contains "8g: section still runs with empty GOAL_* vars" \
+    "goal_id= id= title=" "$AG_NOENV_OUT"
 fi
 
 # ============================================================
@@ -2714,6 +2770,383 @@ STRIDE
   BR_CACHE_I=$(cat "$BR_DIR_I/.stride-env-cache" 2>/dev/null)
   assert_contains "13i: persisted path with spaces is recovered" "TASK_IDENTIFIER='W88'" "$BR_CACHE_I"
   rm -rf "$BR_DIR_I" "$BR_PERSIST_I"
+fi
+
+# ============================================================
+# Test Group 14: per-hook timeout enforcement (W1513)
+# ============================================================
+echo ""
+echo "=== Test Group 14: per-hook timeout enforcement (W1513) ==="
+
+# 14a-14d: _hook_timeout_secs maps each routed section to its documented budget
+# (after_doing 120s; everything else, including unknown sections, 60s).
+TO_MAP=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  printf '%s %s %s %s %s\n' \
+    "$(_hook_timeout_secs before_doing)" \
+    "$(_hook_timeout_secs after_doing)" \
+    "$(_hook_timeout_secs before_review)" \
+    "$(_hook_timeout_secs after_goal)" \
+    "$(_hook_timeout_secs some_unknown_section)"
+)
+assert_eq "14a: per-hook budgets (before/after_doing/before_review/after_goal/unknown)" \
+  "60 120 60 60 60" "$TO_MAP"
+
+# 14b: STRIDE_HOOK_TIMEOUT_SECS overrides every section when a positive integer.
+TO_OVERRIDE=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  STRIDE_HOOK_TIMEOUT_SECS=5 _hook_timeout_secs after_doing
+)
+assert_eq "14b: positive override wins over the default budget" "5" "$TO_OVERRIDE"
+
+# 14c: a non-numeric override is ignored; the documented default applies.
+TO_BADOVERRIDE=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  STRIDE_HOOK_TIMEOUT_SECS=abc _hook_timeout_secs after_doing
+)
+assert_eq "14c: non-numeric override falls back to the default budget" "120" "$TO_BADOVERRIDE"
+
+# 14d: a zero override is ignored (must be a positive integer).
+TO_ZEROOVERRIDE=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  STRIDE_HOOK_TIMEOUT_SECS=0 _hook_timeout_secs before_doing
+)
+assert_eq "14d: zero override falls back to the default budget" "60" "$TO_ZEROOVERRIDE"
+
+# 14e: _resolve_timeout_bin resolves cleanly to empty when no timeout utility is
+# on PATH — the documented graceful degradation (no enforcement, no error).
+TO_NOBIN=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  PATH="" _resolve_timeout_bin 2>/dev/null
+)
+assert_eq "14e: no timeout utility on PATH resolves to empty (clean degrade)" "" "$TO_NOBIN"
+
+# The remaining cases need a real timeout utility to exercise enforcement.
+if [ -z "$(command -v timeout || command -v gtimeout)" ]; then
+  echo "  SKIP: 14f-14h require a timeout/gtimeout utility (none found)"
+else
+  # 14f: a command that outlasts its (overridden 1s) budget is terminated and
+  # reported via the existing failed-JSON shape — exit_code 124, a self-
+  # describing timeout note, and (after_doing/pre) the exit-2 blocking semantic.
+  TO_E2E_PROJ="$TMPDIR_TEST/timeout-e2e"
+  mkdir -p "$TO_E2E_PROJ"
+  cat > "$TO_E2E_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+sleep 5
+```
+STRIDE
+  TO_COMPLETE_JSON='{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+  TO_E2E_OUT=$(echo "$TO_COMPLETE_JSON" | \
+    STRIDE_HOOK_TIMEOUT_SECS=1 CLAUDE_PROJECT_DIR="$TO_E2E_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+  TO_E2E_RC=$?
+  assert_exit "14f: timed-out after_doing blocks completion (exit 2)" 2 "$TO_E2E_RC"
+  assert_contains "14f: failed-JSON carries the timeout exit_code 124" '"exit_code": 124' "$TO_E2E_OUT"
+  assert_contains "14f: failure names the per-hook timeout budget" "per-hook timeout budget" "$TO_E2E_OUT"
+
+  # 14g: a fast command well under the (overridden) budget still passes cleanly.
+  TO_OK_PROJ="$TMPDIR_TEST/timeout-ok"
+  mkdir -p "$TO_OK_PROJ"
+  cat > "$TO_OK_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo "fast_command_ran"
+```
+STRIDE
+  TO_OK_OUT=$(echo "$TO_COMPLETE_JSON" | \
+    STRIDE_HOOK_TIMEOUT_SECS=5 CLAUDE_PROJECT_DIR="$TO_OK_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+  TO_OK_RC=$?
+  assert_exit "14g: fast command under budget exits 0" 0 "$TO_OK_RC"
+  assert_contains "14g: fast command ran" "fast_command_ran" "$TO_OK_OUT"
+
+  # 14h: degradation — with the resolver stubbed empty, the executor still runs
+  # the section to success via the in-process eval fallback (no enforcement, no
+  # error). Proves AC3 for the executor, independent of host tooling.
+  TO_DEGRADE_PROJ="$TMPDIR_TEST/timeout-degrade"
+  mkdir -p "$TO_DEGRADE_PROJ"
+  cat > "$TO_DEGRADE_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo "degraded_path_ran"
+```
+STRIDE
+  TO_DEGRADE_OUT=$(
+    cd "$TO_DEGRADE_PROJ" || exit 99
+    source "$HOOK_SCRIPT" 2>/dev/null
+    _resolve_timeout_bin() { printf ''; }
+    STRIDE_MD="$TO_DEGRADE_PROJ/.stride.md"
+    PROJECT_DIR="$TO_DEGRADE_PROJ"
+    HAS_JQ=true
+    HOOK_NAME="after_doing"
+    run_stride_section "after_doing" 2>/dev/null
+  )
+  TO_DEGRADE_RC=$?
+  assert_exit "14h: eval fallback (no timeout util) succeeds" 0 "$TO_DEGRADE_RC"
+  assert_contains "14h: eval fallback ran the command" "degraded_path_ran" "$TO_DEGRADE_OUT"
+fi
+
+# ============================================================
+# Test Group 15: millisecond duration reporting (W1514)
+# ============================================================
+echo ""
+echo "=== Test Group 15: millisecond duration reporting (W1514) ==="
+
+# 15a: _now_ms returns an all-digit epoch-millisecond value of the right
+# magnitude (13 digits in the 2020s).
+NOW_MS_A=$(source "$HOOK_SCRIPT" 2>/dev/null; _now_ms)
+case "$NOW_MS_A" in
+  '' | *[!0-9]*)
+    echo -e "  ${RED}FAIL${RESET}: 15a: _now_ms not all digits ($NOW_MS_A)"; FAIL=$((FAIL + 1)) ;;
+  *)
+    if [ "${#NOW_MS_A}" -ge 12 ]; then
+      echo -e "  ${GREEN}PASS${RESET}: 15a: _now_ms returns epoch-ms all digits (${#NOW_MS_A} digits)"; PASS=$((PASS + 1))
+    else
+      echo -e "  ${RED}FAIL${RESET}: 15a: _now_ms magnitude too small ($NOW_MS_A)"; FAIL=$((FAIL + 1))
+    fi ;;
+esac
+
+# 15b: _now_ms advances with sub-second fidelity across a 0.15s sleep — proves
+# the active source is high-resolution, not the whole-second last resort (which
+# would report 0 or 1000).
+NOW_MS_DELTA=$(source "$HOOK_SCRIPT" 2>/dev/null; a=$(_now_ms); sleep 0.15; b=$(_now_ms); echo $((b - a)))
+if [ "$NOW_MS_DELTA" -ge 100 ] && [ "$NOW_MS_DELTA" -lt 1000 ]; then
+  echo -e "  ${GREEN}PASS${RESET}: 15b: _now_ms tracks a 0.15s sleep with ms fidelity (${NOW_MS_DELTA}ms)"; PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${RESET}: 15b: _now_ms delta ${NOW_MS_DELTA}ms is not sub-second high-resolution"; FAIL=$((FAIL + 1))
+fi
+
+# 15c: perl fallback — with GNU `date +%s%N` forced to fail and EPOCHREALTIME
+# unset, _now_ms still returns an all-digit epoch-ms value via Time::HiRes. This
+# is the path a stock-BSD-date (macOS without coreutils) platform takes.
+if command -v perl > /dev/null 2>&1; then
+  NOW_MS_PERL=$(
+    source "$HOOK_SCRIPT" 2>/dev/null
+    unset EPOCHREALTIME
+    date() { return 1; }   # neutralize the GNU date +%s%N branch
+    _now_ms
+  )
+  case "$NOW_MS_PERL" in
+    '' | *[!0-9]*)
+      echo -e "  ${RED}FAIL${RESET}: 15c: perl fallback not all digits ($NOW_MS_PERL)"; FAIL=$((FAIL + 1)) ;;
+    *)
+      if [ "${#NOW_MS_PERL}" -ge 12 ]; then
+        echo -e "  ${GREEN}PASS${RESET}: 15c: perl fallback yields epoch-ms when date +%N is unavailable"; PASS=$((PASS + 1))
+      else
+        echo -e "  ${RED}FAIL${RESET}: 15c: perl fallback magnitude wrong ($NOW_MS_PERL)"; FAIL=$((FAIL + 1))
+      fi ;;
+  esac
+else
+  echo "  SKIP: 15c perl fallback (perl not available)"
+fi
+
+# 15d: the success JSON emits an integer duration_ms and NO lingering
+# duration_seconds field.
+if command -v jq > /dev/null 2>&1; then
+  MS_PROJ="$TMPDIR_TEST/duration-ms"
+  mkdir -p "$MS_PROJ"
+  cat > "$MS_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo "ms_test"
+```
+STRIDE
+  MS_OUT=$(echo "$COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$MS_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+  if echo "$MS_OUT" | jq -e '.duration_ms | type == "number"' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 15d: success JSON has integer duration_ms"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 15d: success JSON missing numeric duration_ms: $MS_OUT"; FAIL=$((FAIL + 1))
+  fi
+  if echo "$MS_OUT" | jq -e 'has("duration_seconds")' > /dev/null 2>&1; then
+    echo -e "  ${RED}FAIL${RESET}: 15d: lingering duration_seconds field in success JSON"; FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 15d: no lingering duration_seconds field"; PASS=$((PASS + 1))
+  fi
+else
+  echo "  SKIP: 15d duration_ms JSON assertion (jq not available)"
+fi
+
+# ============================================================
+# Test Group 16: backslash line-continuation in the parser (W1515)
+# ============================================================
+echo ""
+echo "=== Test Group 16: backslash line-continuation (W1515) ==="
+
+CONT_COMPLETE_JSON='{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+
+# 16a: a command split across lines with a trailing backslash is joined and runs
+# as ONE command.
+CONT_PROJ="$TMPDIR_TEST/continuation-join"
+mkdir -p "$CONT_PROJ"
+cat > "$CONT_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo one \
+two three
+```
+STRIDE
+CONT_OUT=$(echo "$CONT_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$CONT_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+CONT_RC=$?
+assert_exit "16a: continuation hook exits 0" 0 "$CONT_RC"
+assert_contains "16a: joined command output is one line" "one two three" "$CONT_OUT"
+if command -v jq > /dev/null 2>&1; then
+  if echo "$CONT_OUT" | jq -e '.commands_completed | length == 1' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16a: continued lines collapse to a single command"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16a: expected 1 joined command: $CONT_OUT"; FAIL=$((FAIL + 1))
+  fi
+  if echo "$CONT_OUT" | jq -e '.commands_completed[0] == "echo one two three"' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16a: joined command text is exactly the continuation"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16a: joined command text wrong: $CONT_OUT"; FAIL=$((FAIL + 1))
+  fi
+fi
+
+# 16b: a standalone comment after a completed command is still skipped (not
+# glued to the prior continued command), and blank/comment handling survives.
+CONT_CMT_PROJ="$TMPDIR_TEST/continuation-comment"
+mkdir -p "$CONT_CMT_PROJ"
+cat > "$CONT_CMT_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo alpha \
+beta
+# a standalone comment
+echo gamma
+```
+STRIDE
+CONT_CMT_OUT=$(echo "$CONT_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$CONT_CMT_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+assert_contains "16b: continued command ran" "alpha beta" "$CONT_CMT_OUT"
+assert_contains "16b: following command ran" "gamma" "$CONT_CMT_OUT"
+if command -v jq > /dev/null 2>&1; then
+  if echo "$CONT_CMT_OUT" | jq -e '.commands_completed | length == 2' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16b: two commands (comment skipped, not glued)"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16b: expected 2 commands, comment leaked: $CONT_CMT_OUT"; FAIL=$((FAIL + 1))
+  fi
+  if echo "$CONT_CMT_OUT" | jq -e '.commands_completed | map(contains("standalone comment")) | any | not' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16b: comment text never entered a command"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16b: comment glued into a command: $CONT_CMT_OUT"; FAIL=$((FAIL + 1))
+  fi
+fi
+
+# 16c: a line ending in an EVEN run of backslashes is a literal backslash, not a
+# continuation — it is NOT joined with the next line (leaves genuine literal
+# backslashes intact, per the pitfall).
+CONT_LIT_PROJ="$TMPDIR_TEST/continuation-literal"
+mkdir -p "$CONT_LIT_PROJ"
+cat > "$CONT_LIT_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo end\\
+echo separate
+```
+STRIDE
+CONT_LIT_OUT=$(echo "$CONT_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$CONT_LIT_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+if command -v jq > /dev/null 2>&1; then
+  if echo "$CONT_LIT_OUT" | jq -e '.commands_completed | length == 2' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16c: even trailing backslashes do not continue (2 commands)"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16c: literal backslash wrongly joined: $CONT_LIT_OUT"; FAIL=$((FAIL + 1))
+  fi
+fi
+
+# ============================================================
+# Test Group 17: claim-time dirty baseline guard (W1516)
+# ============================================================
+echo ""
+echo "=== Test Group 17: claim-time dirty baseline guard (W1516) ==="
+
+if ! command -v jq > /dev/null 2>&1 || ! command -v git > /dev/null 2>&1; then
+  echo "  SKIP: Group 17 requires jq and git"
+else
+  # End-to-end: claim in a repo that ALREADY has uncommitted/untracked edits,
+  # then let the "task" modify one pre-existing file further and add a new one.
+  # The after_doing snapshot must exclude the pre-existing, task-untouched edits
+  # but keep the pre-existing file the task modified and the new task file.
+  BL_DIR="$TMPDIR_TEST/baseline-guard"
+  mkdir -p "$BL_DIR"
+  (
+    cd "$BL_DIR" || exit 1
+    git init -q
+    git config user.email "test@test.local"
+    git config user.name "Test"
+    cat > .gitignore << 'GITIGNORE'
+.stride.md
+.stride-env-cache
+.stride-changed-files.json
+.stride-diff-upload-state
+GITIGNORE
+    echo "committed" > pre_mod.txt
+    echo "committed" > untouched_committed.txt
+    git add .gitignore pre_mod.txt untouched_committed.txt > /dev/null
+    git commit -q -m "init"
+
+    cat > .stride.md << 'STRIDE'
+## before_doing
+```bash
+echo "before_doing_ran"
+```
+## after_doing
+```bash
+echo "after_doing_ran"
+```
+STRIDE
+
+    # PRE-EXISTING dirty state (before the claim): modify a committed file and
+    # add an untracked file — both UNRELATED to the task about to be claimed.
+    echo "pre-existing unrelated edit" > pre_mod.txt
+    echo "pre-existing untracked junk" > pre_new.txt
+
+    # Claim (before_doing) with a parseable task response so the env cache —
+    # including TASK_BASE_REF and the new TASK_DIRTY_BASELINE — is written.
+    CLAIM_JSON_BL='{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"},"tool_response":"{\"data\":{\"id\":777,\"identifier\":\"W777\",\"title\":\"Baseline Task\",\"status\":\"in_progress\",\"complexity\":\"small\",\"priority\":\"low\"}}"}'
+    echo "$CLAIM_JSON_BL" | CLAUDE_PROJECT_DIR="$PWD" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+
+    # The TASK does its work: modify the pre-existing file FURTHER, add a new
+    # file; leave pre_new.txt untouched.
+    echo "TASK further modification" > pre_mod.txt
+    echo "task output" > task_new.txt
+
+    # Complete (after_doing) writes .stride-changed-files.json.
+    COMPLETE_JSON_BL='{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/777/complete"}}'
+    echo "$COMPLETE_JSON_BL" | CLAUDE_PROJECT_DIR="$PWD" bash "$HOOK_SCRIPT" pre > /dev/null 2>&1
+  )
+  BL_ENV=$(cat "$BL_DIR/.stride-env-cache" 2>/dev/null)
+  BL_SNAP=$(cat "$BL_DIR/.stride-changed-files.json" 2>/dev/null)
+
+  # 17a: the env cache records a TASK_DIRTY_BASELINE alongside TASK_BASE_REF.
+  assert_contains "17a: env cache records TASK_DIRTY_BASELINE" "TASK_DIRTY_BASELINE=" "$BL_ENV"
+  assert_contains "17a: env cache still records TASK_BASE_REF" "TASK_BASE_REF=" "$BL_ENV"
+
+  # 17b: a pre-existing, task-untouched edit is excluded from the snapshot.
+  if echo "$BL_SNAP" | jq -e 'map(.path) | index("pre_new.txt") == null' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 17b: pre-existing untouched untracked file excluded"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 17b: pre-existing untouched file leaked into snapshot: $BL_SNAP"; FAIL=$((FAIL + 1))
+  fi
+
+  # 17c: a pre-existing file the task modified FURTHER is still captured.
+  if echo "$BL_SNAP" | jq -e 'map(.path) | index("pre_mod.txt") != null' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 17c: pre-existing file modified by the task is still captured"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 17c: task-modified pre-existing file wrongly filtered: $BL_SNAP"; FAIL=$((FAIL + 1))
+  fi
+
+  # 17d: a brand-new task file is captured.
+  if echo "$BL_SNAP" | jq -e 'map(.path) | index("task_new.txt") != null' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 17d: new task file captured"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 17d: new task file missing from snapshot: $BL_SNAP"; FAIL=$((FAIL + 1))
+  fi
+
+  # 17e: self-artifact exclusion (D67) still holds — the snapshot never lists
+  # its own bookkeeping files.
+  if echo "$BL_SNAP" | jq -e 'map(.path) | (index(".stride-changed-files.json") == null) and (index(".stride-diff-upload-state") == null)' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 17e: self-artifact exclusion preserved"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 17e: self-artifact leaked: $BL_SNAP"; FAIL=$((FAIL + 1))
+  fi
 fi
 
 # ============================================================

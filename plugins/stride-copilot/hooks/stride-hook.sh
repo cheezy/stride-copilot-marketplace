@@ -40,6 +40,45 @@ if [ "$_delegate_to_ps1" = "true" ]; then
   exec powershell.exe -ExecutionPolicy Bypass -File "$PS1_SCRIPT" "$PHASE"
 fi
 
+# Portable base64 decode of stdin (W1516). GNU/modern-macOS use -d; stock
+# BSD/older macOS use -D. The input is captured first so the fallback re-feeds
+# it after a failed first attempt (a naive `base64 -d || base64 -D` would send
+# the already-consumed stdin as empty). Empty output when base64 is unavailable.
+_b64_decode() {
+  local _in
+  _in=$(cat)
+  command -v base64 > /dev/null 2>&1 || return 0
+  printf '%s' "$_in" | base64 -d 2>/dev/null \
+    || printf '%s' "$_in" | base64 -D 2>/dev/null \
+    || true
+}
+
+# Compute the claim-time dirty baseline (W1516): one "<blobsha>\t<path>" line per
+# path git currently reports as modified/staged/untracked-not-ignored, where the
+# blob sha is git's content hash of the CURRENT file. A later capture compares a
+# candidate path's current hash to this recorded hash to tell whether the path
+# changed SINCE claim time — so a pre-existing, task-untouched edit is filtered
+# while a pre-existing file the task later modifies still surfaces. Only hashes
+# and paths are emitted — never file contents. Paths git quotes (special
+# characters) are skipped (they fall through to being captured, the safe
+# default). Runs from PROJECT_DIR, which is the repo root in Stride's use — the
+# same assumption capture_changed_files already makes about path relativity.
+_compute_dirty_baseline() {
+  command -v git > /dev/null 2>&1 || return 0
+  (
+    cd "$PROJECT_DIR" 2>/dev/null || exit 0
+    local _line _path _sha
+    git status --porcelain 2>/dev/null | while IFS= read -r _line; do
+      _path="${_line:3}"
+      case "$_path" in *" -> "*) _path="${_path##* -> }" ;; esac
+      case "$_path" in \"*) continue ;; esac
+      [ -f "$_path" ] || continue
+      _sha=$(git hash-object "$_path" 2>/dev/null) || continue
+      [ -n "$_sha" ] && printf '%s\t%s\n' "$_sha" "$_path"
+    done
+  )
+}
+
 # --- Per-file diff capture (G148/W719 contract, Option D semantic) ---
 # Emits a JSON array of `{path, diff}` entries to stdout, one per file that
 # differs between $1 (base ref) and the agent's WORKING TREE at the time the
@@ -109,9 +148,34 @@ capture_changed_files() {
   local jsonl_file
   jsonl_file=$(mktemp)
 
+  # (W1516) Decode the claim-time dirty baseline once. Each line is
+  # "<blobsha>\t<path>"; a candidate path present here whose CURRENT content
+  # hash still matches was already dirty at claim time and untouched by the
+  # task, so it is filtered out of the snapshot below. Empty when no baseline
+  # was recorded (clean claim, older env cache, or base64 unavailable).
+  local _baseline_decoded=""
+  if [ -n "${TASK_DIRTY_BASELINE:-}" ]; then
+    _baseline_decoded=$(printf '%s' "$TASK_DIRTY_BASELINE" | _b64_decode)
+  fi
+
   local file
   while IFS= read -r file; do
     [ -z "$file" ] && continue
+
+    # (W1516) Skip a path that was already dirty at claim time AND whose content
+    # is unchanged since — a pre-existing, task-untouched edit that must not be
+    # misattributed to the agent. A baselined path whose current hash DIFFERS
+    # (the task edited it further) is kept. A path absent from the baseline is a
+    # genuine task change and is kept.
+    if [ -n "$_baseline_decoded" ]; then
+      local _base_sha _cur_sha
+      _base_sha=$(printf '%s\n' "$_baseline_decoded" \
+        | awk -F'\t' -v p="$file" '$2 == p { print $1; exit }')
+      if [ -n "$_base_sha" ]; then
+        _cur_sha=$(git hash-object "$file" 2>/dev/null || printf '')
+        [ "$_cur_sha" = "$_base_sha" ] && continue
+      fi
+    fi
 
     # Determine whether this path is in the untracked list (membership lookup,
     # not just empty check — tracked_files and untracked_files were merged
@@ -373,6 +437,98 @@ self_heal_changed_files_upload() {
   return 0
 }
 
+# --- Per-hook timeout budget (W1513) ---
+# Seconds allotted to a whole `.stride.md` hook section, keyed on the section
+# name. Mirrors the documented Hooks Reference table in the stride-workflow
+# SKILL: after_doing = 120s; before_doing / before_review / after_review /
+# after_goal (and any unrecognized section) = 60s. Every inner limit sits well
+# under the 300s outer host budget declared in hooks/hooks.json, so enforcing
+# them can never breach the host ceiling.
+#
+# A positive-integer STRIDE_HOOK_TIMEOUT_SECS overrides the budget for every
+# section. It exists so the test suites can exercise the timeout path without
+# waiting out the real 60/120s limits (and doubles as an advanced-tuning knob);
+# an unset or non-numeric value is ignored and the documented defaults apply.
+_hook_timeout_secs() {
+  case "${STRIDE_HOOK_TIMEOUT_SECS:-}" in
+    '' | *[!0-9]*) : ;;
+    *) if [ "$STRIDE_HOOK_TIMEOUT_SECS" -gt 0 ]; then
+         printf '%s' "$STRIDE_HOOK_TIMEOUT_SECS"
+         return 0
+       fi ;;
+  esac
+  case "$1" in
+    after_doing) printf '120' ;;
+    *)           printf '60' ;;
+  esac
+}
+
+# Resolve a GNU-coreutils timeout utility once. Prefers `timeout`, then
+# `gtimeout` (Homebrew coreutils installs the latter on macOS). Prints the
+# resolved binary name, or nothing when neither exists — in which case the
+# executor degrades to NO per-hook enforcement (only the 300s host budget
+# applies). Stock macOS/BSD ship no timeout utility, so this graceful no-op is
+# the documented fallback there rather than an error.
+_resolve_timeout_bin() {
+  if command -v timeout > /dev/null 2>&1; then
+    printf 'timeout'
+  elif command -v gtimeout > /dev/null 2>&1; then
+    printf 'gtimeout'
+  fi
+}
+
+# Current wall-clock time in integer milliseconds, portably (W1514). The hook
+# may run under bash 3.2 (no EPOCHREALTIME) and/or BSD date (no %N), so several
+# high-resolution sources are tried in order, each guarded to accept only an
+# all-digit result, before a whole-second last resort:
+#   1. bash 5+ EPOCHREALTIME  — microsecond, no subprocess
+#   2. GNU `date +%s%N`        — nanosecond (rejected on BSD, whose %N is literal)
+#   3. perl Time::HiRes        — microsecond; core module, present on macOS/Linux
+#   4. `date +%s` * 1000       — ms UNITS at second precision (never sub-second)
+# This satisfies the duration_ms convention without depending on GNU-only
+# `date +%s%N`.
+_now_ms() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    # "<secs>.<frac>"; the radix char is locale-dependent, so normalize , -> .
+    local _er="${EPOCHREALTIME//,/.}"
+    local _s="${_er%%.*}" _f="${_er#*.}"
+    _f="${_f}000000"
+    printf '%s%s' "$_s" "${_f:0:3}"
+    return 0
+  fi
+  local _ns
+  _ns=$(date +%s%N 2>/dev/null)
+  case "$_ns" in
+    '' | *[!0-9]*) : ;;
+    *) printf '%s' "$(( _ns / 1000000 ))"; return 0 ;;
+  esac
+  if command -v perl > /dev/null 2>&1; then
+    local _pms
+    _pms=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null)
+    case "$_pms" in
+      '' | *[!0-9]*) : ;;
+      *) printf '%s' "$_pms"; return 0 ;;
+    esac
+  fi
+  printf '%s000' "$(date +%s)"
+}
+
+# True (exit 0) when a line ends with a shell line-continuation backslash
+# (W1515). A trailing backslash continues the command onto the next line ONLY
+# when it is unescaped — i.e. the run of trailing backslashes has ODD length.
+# An even run (`\\`, `\\\\`, ...) is a literal backslash and does NOT continue,
+# so genuine literal backslashes are left intact. Trailing whitespace is
+# significant (a backslash followed by a space does not continue), matching the
+# shell; leading whitespace was already trimmed by the caller.
+_has_line_continuation() {
+  local _s="$1" _n=0
+  while [ "${_s%\\}" != "$_s" ]; do
+    _s="${_s%\\}"
+    _n=$((_n + 1))
+  done
+  [ $(( _n % 2 )) -eq 1 ]
+}
+
 # --- Parse and execute one .stride.md hook section ---
 # Takes a single section name (e.g. "before_doing", "after_goal") and:
 #   1. Parses the first `## <section>` block from .stride.md (first-wins,
@@ -419,15 +575,36 @@ run_stride_section() {
     return 0
   fi
 
-  local _cmd _trimmed
+  # Build the command list, joining backslash line-continuations (W1515) so a
+  # multi-line command (e.g. a long `gh pr create` split with trailing `\`) runs
+  # as ONE command instead of fragmented pieces. Blank/comment skipping applies
+  # only when starting a fresh command (_pending empty); a line pulled in by a
+  # continuation is appended verbatim, exactly as the shell would join it. For
+  # non-continued input every branch reduces to the pre-W1515 behavior, so
+  # single-line commands parse byte-identically.
+  local _cmd _trimmed _pending=""
   local _cmd_list
   _cmd_list=()
   while IFS= read -r _cmd; do
     _trimmed="${_cmd#"${_cmd%%[![:space:]]*}"}"
-    [ -z "$_trimmed" ] && continue
-    case "$_trimmed" in \#*) continue ;; esac
+    if [ -n "$_pending" ]; then
+      _trimmed="${_pending}${_trimmed}"
+      _pending=""
+    else
+      [ -z "$_trimmed" ] && continue
+      case "$_trimmed" in \#*) continue ;; esac
+    fi
+    if _has_line_continuation "$_trimmed"; then
+      # Drop the single continuation backslash and hold the rest for the next
+      # line (any literal backslashes preceding it are preserved).
+      _pending="${_trimmed%\\}"
+      continue
+    fi
     _cmd_list+=("$_trimmed")
   done <<< "$_commands"
+  # Flush a dangling continuation (final fenced line ended with a backslash) so
+  # the command is still run rather than silently dropped.
+  [ -n "$_pending" ] && _cmd_list+=("$_pending")
 
   if [ ${#_cmd_list[@]} -eq 0 ]; then
     finalize_after_doing
@@ -451,24 +628,69 @@ run_stride_section() {
   # commands_output array (D65). Keeps passing-gate output off fd 2 so Claude
   # Code does not render it under a false "PreToolUse:Bash hook error" label.
   _output_file=$(mktemp)
-  local _start_secs
+  # _start_secs (whole seconds) drives the W1513 per-hook timeout elapsed math;
+  # _start_ms (W1514) drives the millisecond duration_ms reported in the success
+  # JSON — the two clocks are independent so timeout budgeting keeps its cheap
+  # second granularity while telemetry gains real sub-second fidelity.
+  local _start_secs _start_ms
   _start_secs=$(date +%s)
+  _start_ms=$(_now_ms)
   local _cmd_index=0
   local _cmd_total=${#_cmd_list[@]}
   local _cmd_stdout_file _cmd_stderr_file _cmd_exit _cmd_stdout _cmd_stderr
-  local _remaining_file _completed_json _remaining_json _output_json _end_secs _duration _i
+  local _remaining_file _completed_json _remaining_json _output_json _duration_ms _i
+  # Per-hook timeout budget (W1513): the whole section shares _hook_limit
+  # seconds; each command runs under the time REMAINING so the section total
+  # can never exceed the limit. _timeout_bin is empty when no timeout utility
+  # exists (enforcement disabled, only the 300s host budget applies).
+  local _hook_limit _timeout_bin _elapsed _time_remaining
+  _hook_limit=$(_hook_timeout_secs "$_section")
+  _timeout_bin=$(_resolve_timeout_bin)
 
   for _trimmed in "${_cmd_list[@]}"; do
     _cmd_stdout_file=$(mktemp)
     _cmd_stderr_file=$(mktemp)
 
     # Relax `set -u` and `pipefail` for the user's command so that a reference
-    # to an unset env var doesn't silently abort the eval before the actual
+    # to an unset env var doesn't silently abort execution before the actual
     # command runs; restore the strict flags immediately afterward.
     set +uo pipefail
-    eval "$_trimmed" > "$_cmd_stdout_file" 2> "$_cmd_stderr_file"
-    _cmd_exit=$?
+    if [ -n "$_timeout_bin" ]; then
+      # Enforce the per-hook budget. Each command is capped at the time
+      # REMAINING in the section's budget, so the section as a whole can never
+      # outlast _hook_limit (and thus never the 300s host ceiling). `timeout`
+      # sends SIGTERM on expiry and exits 124 — a genuine failure that flows
+      # through the failed-JSON path below, preserving the after_doing
+      # PreToolUse exit-2 block (a timeout is a failure, not a silent pass).
+      # Running via `bash -c` isolates each command; exported env (TASK_*,
+      # GOAL_*, etc.) is inherited so hook commands see the same variables.
+      # NOTE: per-command shell state does NOT persist across commands when
+      # enforcement is active — a bare `cd subdir` or a non-exported var set on
+      # one line is not visible to the next (each runs in its own subshell). The
+      # no-timeout `eval` branch below preserves such state. Hook sections use
+      # independent commands, so this divergence is benign in practice.
+      _elapsed=$(( $(date +%s) - _start_secs ))
+      _time_remaining=$(( _hook_limit - _elapsed ))
+      [ "$_time_remaining" -lt 1 ] && _time_remaining=1
+      "$_timeout_bin" "$_time_remaining" bash -c "$_trimmed" \
+        > "$_cmd_stdout_file" 2> "$_cmd_stderr_file"
+      _cmd_exit=$?
+    else
+      # No timeout utility available — degrade to no per-hook enforcement (only
+      # the 300s hooks.json host budget applies). In-process eval preserves the
+      # pre-W1513 behavior, including cross-command shell state.
+      eval "$_trimmed" > "$_cmd_stdout_file" 2> "$_cmd_stderr_file"
+      _cmd_exit=$?
+    fi
     set -uo pipefail
+
+    # Make a budget timeout self-describing (W1513). `timeout` exits 124 on
+    # expiry; annotate stderr so the failed-JSON and the fd2 message name the
+    # cause. exit_code stays 124 so the hook-diagnostician still parses it.
+    if [ "$_cmd_exit" -eq 124 ] && [ -n "$_timeout_bin" ]; then
+      printf 'stride-hook: %s hook command exceeded its %ss per-hook timeout budget\n' \
+        "$_section" "$_hook_limit" >> "$_cmd_stderr_file"
+    fi
 
     if [ "$_cmd_exit" -eq 0 ]; then
       echo "$_trimmed" >> "$_completed_file"
@@ -542,8 +764,7 @@ run_stride_section() {
   # calling this for "after_goal" does NOT retrigger.
   finalize_after_doing
 
-  _end_secs=$(date +%s)
-  _duration=$((_end_secs - _start_secs))
+  _duration_ms=$(( $(_now_ms) - _start_ms ))
 
   if [ "$HAS_JQ" = "true" ]; then
     _completed_json=$(jq -R . < "$_completed_file" | jq -s . 2>/dev/null || echo "[]")
@@ -551,7 +772,7 @@ run_stride_section() {
 
     jq -n \
       --arg hook "$_section" \
-      --argjson duration "$_duration" \
+      --argjson duration_ms "$_duration_ms" \
       --argjson completed "$_completed_json" \
       --argjson outputs "$_output_json" \
       '{
@@ -559,7 +780,7 @@ run_stride_section() {
         status: "success",
         commands_completed: $completed,
         commands_output: $outputs,
-        duration_seconds: $duration
+        duration_ms: $duration_ms
       }'
   fi
 
@@ -595,10 +816,71 @@ response_has_after_goal() {
         > /dev/null 2>&1
 }
 
+# Export the server-supplied `env` object from the response's after_goal hook
+# entry (W1512). The 2.11.0 CHANGELOG and stride-workflow SKILL promise that
+# GOAL_ID/GOAL_IDENTIFIER/GOAL_TITLE/GOAL_DESCRIPTION (plus BOARD_*/COLUMN_*/
+# AGENT_NAME when present) reach the after_goal child process, but nothing ever
+# extracted them — so a `## after_goal` section that references $GOAL_ID ran
+# with it empty. This function peels the response the same way
+# response_has_after_goal does, selects the FIRST after_goal hook entry's `env`
+# object, and exports each key VERBATIM into the current process environment so
+# the subsequent run_stride_section "after_goal" (which eval's the section's
+# commands) sees them.
+#
+# Contract:
+#   - Values are copied verbatim from the server payload; this NEVER invents,
+#     derives, or looks up any key client-side (in particular it never
+#     synthesizes GOAL_ID from the child task's parent_id).
+#   - A missing env object, an empty env object, or missing keys is a clean
+#     no-op — not an error.
+#   - Gated on $HAS_JQ: without jq the payload cannot be parsed, so the export
+#     degrades to nothing (matching response_has_after_goal's degrade path).
+export_after_goal_env() {
+  local _hook_input="$1"
+  local _response _payload _env
+
+  [ "$HAS_JQ" = "true" ] || return 0
+  [ -n "$_hook_input" ] || return 0
+
+  _response=$(echo "$_hook_input" | jq -r '.tool_response // ""' 2>/dev/null || echo "")
+  [ -n "$_response" ] || return 0
+
+  if echo "$_response" | jq -e 'type == "object" and has("stdout")' > /dev/null 2>&1; then
+    _payload=$(echo "$_response" | jq -r '.stdout // ""' 2>/dev/null)
+  else
+    _payload="$_response"
+  fi
+
+  [ -n "$_payload" ] || return 0
+
+  # The `env` object from the FIRST after_goal hook entry, compacted to one
+  # line. `first(...)` mirrors response_has_after_goal's selection; the `// {}`
+  # collapses "no after_goal entry" and "entry without env" to an empty object.
+  _env=$(echo "$_payload" \
+    | jq -c 'first((.hooks // [])[] | select(.name == "after_goal") | .env) // {}' \
+        2>/dev/null || echo "{}")
+  [ -n "$_env" ] || return 0
+  [ "$_env" = "null" ] && return 0
+
+  # Export each key VERBATIM. Iterate the key names (insertion order
+  # preserved via keys_unsorted) and pull each value back with a targeted
+  # jq lookup, so a value containing spaces stays intact and
+  # `export "$k=$v"` assigns without eval'ing the payload. An empty env
+  # object yields no keys -> no iterations.
+  local _keys _key _val
+  _keys=$(echo "$_env" | jq -r 'keys_unsorted[]' 2>/dev/null || printf '')
+  [ -n "$_keys" ] || return 0
+  while IFS= read -r _key; do
+    [ -n "$_key" ] || continue
+    _val=$(echo "$_env" | jq -r --arg k "$_key" '.[$k] | if . == null then "" else tostring end' 2>/dev/null || printf '')
+    export "$_key=$_val"
+  done <<< "$_keys"
+}
+
 # Exit early if no phase argument or no .stride.md. Placed AFTER the
-# capture_changed_files, finalize_after_doing, run_stride_section, and
-# response_has_after_goal definitions so tests can source this script to use
-# the functions in isolation.
+# capture_changed_files, finalize_after_doing, run_stride_section,
+# response_has_after_goal, and export_after_goal_env definitions so tests can
+# source this script to use the functions in isolation.
 if [ -z "$PHASE" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -721,6 +1003,12 @@ if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
     fi
   fi
 
+  # (W1516) Snapshot which paths are ALREADY dirty at claim time, base64-encoded
+  # as a single safe env-cache line (many paths, no special-char breakage, no
+  # file contents — only hashes). capture_changed_files subtracts this baseline
+  # so unrelated pre-existing edits are never misattributed to the agent.
+  _dirty_baseline_b64=$(_compute_dirty_baseline | base64 2>/dev/null | tr -d '\r\n')
+
   if [ -n "$TASK_JSON" ]; then
     # Values are single-quoted to handle spaces in titles/descriptions.
     # TASK_BASE_REF anchors per-file diff capture to the commit HEAD pointed
@@ -735,6 +1023,7 @@ if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
       echo "TASK_COMPLEXITY='$(echo "$TASK_JSON" | jq -r '.complexity // empty')'"
       echo "TASK_PRIORITY='$(echo "$TASK_JSON" | jq -r '.priority // empty')'"
       echo "TASK_BASE_REF='$_base_ref'"
+      echo "TASK_DIRTY_BASELINE='$_dirty_baseline_b64'"
     } > "$ENV_CACHE" 2>/dev/null || true
     # Clear any stale per-file diff snapshot and upload-state from a previous
     # task (W1094 — a stale state file would mislead the before_review self-heal
@@ -752,13 +1041,19 @@ if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
     _base_ref=$(cd "$PROJECT_DIR" && git rev-parse HEAD 2>/dev/null || true)
     if [ -n "$_base_ref" ]; then
       if [ -f "$ENV_CACHE" ]; then
-        _preserved=$(grep -v '^TASK_BASE_REF=' "$ENV_CACHE" 2>/dev/null || true)
+        # Drop the previous claim's TASK_BASE_REF AND TASK_DIRTY_BASELINE so a
+        # stale baseline can't survive into this claim, then re-write both fresh.
+        _preserved=$(grep -v -e '^TASK_BASE_REF=' -e '^TASK_DIRTY_BASELINE=' "$ENV_CACHE" 2>/dev/null || true)
         {
           [ -n "$_preserved" ] && printf '%s\n' "$_preserved"
           echo "TASK_BASE_REF='$_base_ref'"
+          echo "TASK_DIRTY_BASELINE='$_dirty_baseline_b64'"
         } > "$ENV_CACHE" 2>/dev/null || true
       else
-        echo "TASK_BASE_REF='$_base_ref'" > "$ENV_CACHE" 2>/dev/null || true
+        {
+          echo "TASK_BASE_REF='$_base_ref'"
+          echo "TASK_DIRTY_BASELINE='$_dirty_baseline_b64'"
+        } > "$ENV_CACHE" 2>/dev/null || true
       fi
       rm -f "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null || true
       rm -f "$PROJECT_DIR/.stride-diff-upload-state" 2>/dev/null || true
@@ -806,6 +1101,11 @@ if [ "$PHASE" = "post" ]; then
   case "$COMMAND" in
     */api/tasks/*/complete*|*/api/tasks/*/mark_reviewed*)
       if response_has_after_goal "$INPUT"; then
+        # (W1512) Export the server-supplied GOAL_*/BOARD_*/COLUMN_*/AGENT_NAME
+        # env vars from the after_goal hook entry BEFORE the section runs, so a
+        # `## after_goal` command referencing $GOAL_ID/$GOAL_IDENTIFIER/etc.
+        # sees the values the server sent (verbatim; never derived client-side).
+        export_after_goal_env "$INPUT"
         run_stride_section "after_goal" || true
       fi
       ;;

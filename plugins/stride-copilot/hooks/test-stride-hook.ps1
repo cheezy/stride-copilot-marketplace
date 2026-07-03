@@ -750,6 +750,70 @@ Assert-Exit "7e: end-to-end after_goal on mark_reviewed exits 0" 0 $r.ExitCode
 Assert-Contains "7e: mark_reviewed runs after_review" "after_review_ran" $r.Stdout
 Assert-Contains "7e: mark_reviewed runs after_goal" "after_goal_ran" $r.Stdout
 
+# --- W1512: after_goal hook.env forwarding ---
+# Helper: build a payload whose after_goal hook entry carries a server-supplied
+# `env` object. Mirrors Build-AfterGoalInput but attaches env to the after_goal
+# entry so the assertions can confirm the bridge exports it. -Depth 5 keeps the
+# nested env hashtable intact through ConvertTo-Json.
+function Build-AfterGoalInputWithEnv {
+    param(
+        [string]$PrimaryCommand,
+        [hashtable]$Env
+    )
+    $hooksArr = @(
+        @{ name = 'after_review' }
+        @{ name = 'after_goal'; env = $Env }
+    )
+    $inner = (@{ data = @{ id = 99 }; hooks = $hooksArr } | ConvertTo-Json -Depth 5 -Compress)
+    return (@{
+        tool_input    = @{ command = $PrimaryCommand }
+        tool_response = @{ stdout = $inner }
+    } | ConvertTo-Json -Depth 5 -Compress)
+}
+
+# Fixture whose after_goal section echoes every forwarded variable so the
+# assertions can confirm each reached the section process environment.
+$agEnvProj = Join-Path $TmpDir 'after-goal-env'
+New-Item -ItemType Directory -Path $agEnvProj -Force | Out-Null
+Set-Content -Path (Join-Path $agEnvProj '.stride.md') -Value @'
+## after_goal
+```bash
+echo "goal_id=$GOAL_ID id=$GOAL_IDENTIFIER title=$GOAL_TITLE desc=$GOAL_DESCRIPTION board=$BOARD_ID col=$COLUMN_ID agent=$AGENT_NAME"
+```
+'@ -Encoding UTF8
+
+# 7f: a stubbed hook.env with GOAL_*/BOARD_*/COLUMN_*/AGENT_NAME reaches the
+# after_goal section environment, copied VERBATIM (spaces preserved).
+$agEnvInput = Build-AfterGoalInputWithEnv `
+    -PrimaryCommand 'curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete' `
+    -Env @{
+        GOAL_ID          = '4687'
+        GOAL_IDENTIFIER  = 'G4687'
+        GOAL_TITLE       = 'Ship the bridge'
+        GOAL_DESCRIPTION = 'Wire GOAL_* through'
+        BOARD_ID         = '55'
+        COLUMN_ID        = '128'
+        AGENT_NAME       = 'Claude Opus 4.8'
+    }
+$r = Invoke-HookScript -InputJson $agEnvInput -Phase 'post' -ProjectDir $agEnvProj
+Assert-Exit "7f: after_goal env-export exits 0" 0 $r.ExitCode
+Assert-Contains "7f: GOAL_ID exported verbatim" "goal_id=4687" $r.Stdout
+Assert-Contains "7f: GOAL_IDENTIFIER exported verbatim" "id=G4687" $r.Stdout
+Assert-Contains "7f: GOAL_TITLE with spaces exported verbatim" "title=Ship the bridge" $r.Stdout
+Assert-Contains "7f: GOAL_DESCRIPTION exported verbatim" "desc=Wire GOAL_* through" $r.Stdout
+Assert-Contains "7f: BOARD_ID exported verbatim" "board=55" $r.Stdout
+Assert-Contains "7f: COLUMN_ID exported verbatim" "col=128" $r.Stdout
+Assert-Contains "7f: AGENT_NAME with spaces exported verbatim" "agent=Claude Opus 4.8" $r.Stdout
+
+# 7g: an after_goal entry with NO env object is a clean no-op — the section
+# still runs (exit 0) with the GOAL_* vars empty, never an error.
+$agNoEnvInput = Build-AfterGoalInput `
+    -PrimaryCommand 'curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete' `
+    -HookNames @('after_review', 'after_goal')
+$r = Invoke-HookScript -InputJson $agNoEnvInput -Phase 'post' -ProjectDir $agEnvProj
+Assert-Exit "7g: after_goal missing env is a clean no-op (exit 0)" 0 $r.ExitCode
+Assert-Contains "7g: section still runs with empty GOAL_* vars" "goal_id= id= title=" $r.Stdout
+
 # ============================================================
 # Test Group 8: PUT snapshot upload (W839 — G162 port)
 # ============================================================
@@ -1563,6 +1627,295 @@ echo "claimed"
     $cacheJ = Get-Content -Raw -Path (Join-Path $brJ '.stride-env-cache') -ErrorAction SilentlyContinue
     Assert-Contains "10j: id-only persisted payload caches the identifier" "TASK_IDENTIFIER=W99" $cacheJ
     Assert-Contains "10j: id-only persisted payload sets TASK_BASE_REF to HEAD" "TASK_BASE_REF=$headJ" $cacheJ
+}
+
+# ============================================================
+# Test Group 11: per-hook timeout enforcement (W1513)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 14. PowerShell always enforces via
+# WaitForExit(ms) (no external timeout utility needed), so there is no
+# degradation case. Cases are behavioral (Invoke-HookScript) since the ps1
+# exits on load and cannot be dot-sourced for unit tests. STRIDE_HOOK_TIMEOUT_SECS
+# overrides the per-hook budget so the timeout path runs in ~1-2s.
+Write-Host ""
+Write-Host "=== Test Group 11: per-hook timeout enforcement (W1513) ==="
+
+$toProj = Join-Path $TmpDir 'timeout-e2e'
+New-Item -ItemType Directory -Path $toProj -Force | Out-Null
+$toCompleteJson = '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+
+# 11a: a command that outlasts its (overridden 1s) budget is terminated and
+# reported via the existing failed-JSON shape — exit_code 124, a self-describing
+# timeout note, and (after_doing/pre) the exit-2 blocking semantic.
+Set-Content -Path (Join-Path $toProj '.stride.md') -Value @'
+## after_doing
+```bash
+sleep 5
+```
+'@ -Encoding UTF8
+$env:STRIDE_HOOK_TIMEOUT_SECS = '1'
+$r = Invoke-HookScript -InputJson $toCompleteJson -Phase 'pre' -ProjectDir $toProj
+Remove-Item Env:STRIDE_HOOK_TIMEOUT_SECS -ErrorAction SilentlyContinue
+Assert-Exit "11a: timed-out after_doing blocks completion (exit 2)" 2 $r.ExitCode
+Assert-Contains "11a: failed-JSON carries the timeout exit_code 124" '"exit_code":124' $r.Stdout
+Assert-Contains "11a: failure names the per-hook timeout budget" "per-hook timeout budget" ($r.Stdout + $r.Stderr)
+
+# 11b: a fast command well under the (overridden) budget still passes cleanly.
+$toOkProj = Join-Path $TmpDir 'timeout-ok'
+New-Item -ItemType Directory -Path $toOkProj -Force | Out-Null
+Set-Content -Path (Join-Path $toOkProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo "fast_command_ran"
+```
+'@ -Encoding UTF8
+$env:STRIDE_HOOK_TIMEOUT_SECS = '5'
+$r = Invoke-HookScript -InputJson $toCompleteJson -Phase 'pre' -ProjectDir $toOkProj
+Remove-Item Env:STRIDE_HOOK_TIMEOUT_SECS -ErrorAction SilentlyContinue
+Assert-Exit "11b: fast command under budget exits 0" 0 $r.ExitCode
+Assert-Contains "11b: fast command ran" "fast_command_ran" $r.Stdout
+
+# 11c: a non-numeric override is ignored — the documented default budget applies
+# (after_doing = 120s), so a 2s command completes rather than being killed.
+$toDefProj = Join-Path $TmpDir 'timeout-default'
+New-Item -ItemType Directory -Path $toDefProj -Force | Out-Null
+Set-Content -Path (Join-Path $toDefProj '.stride.md') -Value @'
+## after_doing
+```bash
+sleep 2
+echo "default_budget_ran"
+```
+'@ -Encoding UTF8
+$env:STRIDE_HOOK_TIMEOUT_SECS = 'abc'
+$r = Invoke-HookScript -InputJson $toCompleteJson -Phase 'pre' -ProjectDir $toDefProj
+Remove-Item Env:STRIDE_HOOK_TIMEOUT_SECS -ErrorAction SilentlyContinue
+Assert-Exit "11c: non-numeric override falls back to default budget (exit 0)" 0 $r.ExitCode
+Assert-Contains "11c: default-budget command ran to completion" "default_budget_ran" $r.Stdout
+
+# ============================================================
+# Test Group 12: millisecond duration reporting (W1514)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 15 (15d). The success JSON must carry
+# an integer duration_ms (from Stopwatch.Elapsed.TotalMilliseconds) and no
+# lingering duration_seconds field.
+Write-Host ""
+Write-Host "=== Test Group 12: millisecond duration reporting (W1514) ==="
+
+$msProj = Join-Path $TmpDir 'duration-ms'
+New-Item -ItemType Directory -Path $msProj -Force | Out-Null
+Set-Content -Path (Join-Path $msProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo "ms_test"
+```
+'@ -Encoding UTF8
+$msCompleteJson = '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+$r = Invoke-HookScript -InputJson $msCompleteJson -Phase 'pre' -ProjectDir $msProj
+Assert-Exit "12a: duration_ms hook exits 0" 0 $r.ExitCode
+Assert-Contains "12a: success JSON carries duration_ms" '"duration_ms":' $r.Stdout
+# ConvertTo-Json -Compress emits an unquoted number for an [int]; a quoted value
+# would mean it was serialized as a string.
+Assert-NotContains "12a: duration_ms is numeric (unquoted)" '"duration_ms":"' $r.Stdout
+Assert-NotContains "12a: no lingering duration_seconds field" 'duration_seconds' $r.Stdout
+
+# ============================================================
+# Test Group 13: backslash line-continuation in the parser (W1515)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 16.
+Write-Host ""
+Write-Host "=== Test Group 13: backslash line-continuation (W1515) ==="
+
+$contCompleteJson = '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+
+# 13a: a command split across lines with a trailing backslash joins into ONE.
+$contProj = Join-Path $TmpDir 'continuation-join'
+New-Item -ItemType Directory -Path $contProj -Force | Out-Null
+Set-Content -Path (Join-Path $contProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo one \
+two three
+```
+'@ -Encoding UTF8
+$r = Invoke-HookScript -InputJson $contCompleteJson -Phase 'pre' -ProjectDir $contProj
+Assert-Exit "13a: continuation hook exits 0" 0 $r.ExitCode
+$contObj = $null
+try { $contObj = $r.Stdout | ConvertFrom-Json } catch { $contObj = $null }
+if ($contObj -and @($contObj.commands_completed).Count -eq 1 -and
+    @($contObj.commands_completed)[0] -eq 'echo one two three') {
+    Write-Host "  PASS: 13a: continued lines collapse to a single joined command" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 13a: expected single 'echo one two three' command: $($r.Stdout)" -ForegroundColor Red
+    $script:FAIL++
+}
+
+# 13b: a standalone comment after a completed command is skipped, not glued.
+$contCmtProj = Join-Path $TmpDir 'continuation-comment'
+New-Item -ItemType Directory -Path $contCmtProj -Force | Out-Null
+Set-Content -Path (Join-Path $contCmtProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo alpha \
+beta
+# a standalone comment
+echo gamma
+```
+'@ -Encoding UTF8
+$r = Invoke-HookScript -InputJson $contCompleteJson -Phase 'pre' -ProjectDir $contCmtProj
+$contCmtObj = $null
+try { $contCmtObj = $r.Stdout | ConvertFrom-Json } catch { $contCmtObj = $null }
+$contCmtCmds = @($contCmtObj.commands_completed)
+if ($contCmtObj -and $contCmtCmds.Count -eq 2 -and
+    $contCmtCmds[0] -eq 'echo alpha beta' -and $contCmtCmds[1] -eq 'echo gamma') {
+    Write-Host "  PASS: 13b: two commands, comment skipped (not glued)" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 13b: expected [echo alpha beta, echo gamma]: $($r.Stdout)" -ForegroundColor Red
+    $script:FAIL++
+}
+Assert-NotContains "13b: comment text never entered a command" 'standalone comment' ($contCmtCmds -join '|')
+
+# 13c: an even run of trailing backslashes is literal, not a continuation.
+$contLitProj = Join-Path $TmpDir 'continuation-literal'
+New-Item -ItemType Directory -Path $contLitProj -Force | Out-Null
+Set-Content -Path (Join-Path $contLitProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo end\\
+echo separate
+```
+'@ -Encoding UTF8
+$r = Invoke-HookScript -InputJson $contCompleteJson -Phase 'pre' -ProjectDir $contLitProj
+$contLitObj = $null
+try { $contLitObj = $r.Stdout | ConvertFrom-Json } catch { $contLitObj = $null }
+if ($contLitObj -and @($contLitObj.commands_completed).Count -eq 2) {
+    Write-Host "  PASS: 13c: even trailing backslashes do not continue (2 commands)" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 13c: literal backslash wrongly joined: $($r.Stdout)" -ForegroundColor Red
+    $script:FAIL++
+}
+
+# ============================================================
+# Test Group 14: claim-time dirty baseline guard (W1516)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 17. 14a asserts the baseline is
+# recorded at before_doing; 14b asserts the upload filter drops a pre-existing,
+# task-untouched entry while keeping a pre-existing file the task modified and a
+# brand-new task file (the PowerShell snapshot-filtering mirror lives in
+# Invoke-ChangedFilesUpload, so it is exercised through a real PUT).
+Write-Host ""
+Write-Host "=== Test Group 14: claim-time dirty baseline guard (W1516) ==="
+
+# 14a: before_doing records TASK_DIRTY_BASELINE (alongside TASK_BASE_REF) when
+# the working tree is already dirty at claim time.
+$blProj = Join-Path $TmpDir 'baseline-record'
+New-Item -ItemType Directory -Path $blProj -Force | Out-Null
+& git -C $blProj init -q 2>$null
+& git -C $blProj config user.email 't@t' 2>$null
+& git -C $blProj config user.name 't' 2>$null
+Set-Content -Path (Join-Path $blProj '.gitignore') -Value ".stride.md`n.stride-env-cache`n.stride-changed-files.json`n.stride-diff-upload-state" -Encoding UTF8
+Set-Content -Path (Join-Path $blProj 'committed.txt') -Value 'committed' -Encoding UTF8
+& git -C $blProj add -A 2>$null
+& git -C $blProj commit -q -m init 2>$null
+# Pre-existing dirty edits before the claim.
+Set-Content -Path (Join-Path $blProj 'committed.txt') -Value 'pre-existing edit' -Encoding UTF8
+Set-Content -Path (Join-Path $blProj 'pre_new.txt') -Value 'pre-existing untracked' -Encoding UTF8
+Set-Content -Path (Join-Path $blProj '.stride.md') -Value @'
+## before_doing
+```bash
+echo "before_doing_ran"
+```
+'@ -Encoding UTF8
+$blClaim = '{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"},"tool_response":{"stdout":"{\"data\":{\"id\":778,\"identifier\":\"W778\",\"title\":\"BL\",\"status\":\"in_progress\",\"complexity\":\"small\",\"priority\":\"low\"}}"}}'
+$r = Invoke-HookScript -InputJson $blClaim -Phase 'post' -ProjectDir $blProj
+Assert-Exit "14a: baseline claim exits 0" 0 $r.ExitCode
+$blCache = Get-Content -Raw -Path (Join-Path $blProj '.stride-env-cache') -ErrorAction SilentlyContinue
+Assert-Contains "14a: env cache records TASK_DIRTY_BASELINE" 'TASK_DIRTY_BASELINE=' $blCache
+Assert-Contains "14a: env cache still records TASK_BASE_REF" 'TASK_BASE_REF=' $blCache
+
+# 14b: the upload filter drops a pre-existing, unchanged entry but keeps a
+# pre-existing file the task modified and a new task file. Exercised via a real
+# PUT captured by a local HttpListener.
+$blFiltProj = Join-Path $TmpDir 'baseline-filter'
+New-Item -ItemType Directory -Path $blFiltProj -Force | Out-Null
+Set-Content -Path (Join-Path $blFiltProj 'pre_unchanged.txt') -Value 'U1' -Encoding UTF8 -NoNewline
+Set-Content -Path (Join-Path $blFiltProj 'pre_modified.txt') -Value 'M1' -Encoding UTF8 -NoNewline
+Set-Content -Path (Join-Path $blFiltProj 'task_new.txt') -Value 'T1' -Encoding UTF8 -NoNewline
+# Claim-time hashes (pre_modified still holds its claim-time content M1).
+$hashU = (& git -C $blFiltProj hash-object pre_unchanged.txt | Out-String).Trim()
+$hashM = (& git -C $blFiltProj hash-object pre_modified.txt | Out-String).Trim()
+$blText = "$hashU`tpre_unchanged.txt`n$hashM`tpre_modified.txt"
+$blFiltB64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($blText))
+# Task edits pre_modified.txt further (content now differs from the baseline).
+Set-Content -Path (Join-Path $blFiltProj 'pre_modified.txt') -Value 'M2-task-edit' -Encoding UTF8 -NoNewline
+Set-Content -Path (Join-Path $blFiltProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo "ran"
+```
+'@ -Encoding UTF8
+Set-Content -Path (Join-Path $blFiltProj '.stride-changed-files.json') `
+    -Value '[{"path":"pre_unchanged.txt","diff":"d1"},{"path":"pre_modified.txt","diff":"d2"},{"path":"task_new.txt","diff":"d3"}]' -Encoding UTF8
+Set-Content -Path (Join-Path $blFiltProj '.stride-env-cache') `
+    -Value "TASK_ID=99`nTASK_BASE_REF=abc`nTASK_DIRTY_BASELINE=$blFiltB64" -Encoding UTF8
+
+$blPort = 18884
+$blFixture = Join-Path $TmpDir 'baseline-put-fixture.json'
+if (Test-Path $blFixture) { Remove-Item -Force $blFixture }
+$blListenerJob = Start-Job -ArgumentList $blPort, $blFixture -ScriptBlock {
+    param($Port, $Fixture)
+    $l = [System.Net.HttpListener]::new()
+    $l.Prefixes.Add("http://localhost:$Port/")
+    try {
+        $l.Start()
+        $ctx = $l.GetContext()
+        $reader = [System.IO.StreamReader]::new($ctx.Request.InputStream)
+        @{ Body = $reader.ReadToEnd() } | ConvertTo-Json -Compress | Set-Content -Path $Fixture -Encoding UTF8
+        $ctx.Response.StatusCode = 200
+        $ctx.Response.OutputStream.Close()
+    } catch { } finally { if ($l.IsListening) { $l.Stop() } }
+}
+try {
+    $null = Wait-ForListener -Port $blPort
+    $blCmd = "curl -X PATCH http://localhost:$blPort/api/tasks/99/complete -H `"Authorization: Bearer tok`""
+    $blJson = @{ tool_input = @{ command = $blCmd } } | ConvertTo-Json -Compress
+    $r = Invoke-HookScript -InputJson $blJson -Phase 'pre' -ProjectDir $blFiltProj
+    Assert-Exit "14b: hook exits 0 after filtered PUT" 0 $r.ExitCode
+    Wait-Job $blListenerJob -Timeout 8 | Out-Null
+    Remove-Job $blListenerJob -Force -ErrorAction SilentlyContinue
+    if (Test-Path $blFixture) {
+        $rec = Get-Content -Raw -Path $blFixture | ConvertFrom-Json
+        $env = $rec.Body | ConvertFrom-Json
+        $paths = @()
+        try {
+            $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env.changed_files.data))
+            $paths = @(($decoded | ConvertFrom-Json) | ForEach-Object { $_.path })
+        } catch { $paths = @() }
+        if ($paths -notcontains 'pre_unchanged.txt') {
+            Write-Host "  PASS: 14b: pre-existing unchanged entry filtered from the PUT" -ForegroundColor Green; $script:PASS++
+        } else {
+            Write-Host "  FAIL: 14b: pre-existing unchanged entry leaked: $($paths -join ',')" -ForegroundColor Red; $script:FAIL++
+        }
+        if ($paths -contains 'pre_modified.txt') {
+            Write-Host "  PASS: 14b: task-modified pre-existing entry kept" -ForegroundColor Green; $script:PASS++
+        } else {
+            Write-Host "  FAIL: 14b: task-modified entry wrongly filtered: $($paths -join ',')" -ForegroundColor Red; $script:FAIL++
+        }
+        if ($paths -contains 'task_new.txt') {
+            Write-Host "  PASS: 14b: new task entry kept" -ForegroundColor Green; $script:PASS++
+        } else {
+            Write-Host "  FAIL: 14b: new task entry missing: $($paths -join ',')" -ForegroundColor Red; $script:FAIL++
+        }
+    } else {
+        Write-Host "  FAIL: 14b: PUT did not arrive at listener" -ForegroundColor Red; $script:FAIL++
+    }
+} finally {
+    if ($blListenerJob -and $blListenerJob.State -eq 'Running') {
+        Stop-Job $blListenerJob -ErrorAction SilentlyContinue
+        Remove-Job $blListenerJob -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ============================================================
