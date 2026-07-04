@@ -10,7 +10,7 @@ This skill is the user's entry point for the AI-powered security review pipeline
 
 ## Purpose
 
-Run an AI-powered security review of code changes in this repository. Detects vulnerabilities across injection, authentication/authorization, data exposure, cryptography, input validation, race conditions, XSS/code execution, and insecure configuration. Filters out low-impact noise (denial-of-service, rate-limiting, memory-exhaustion). Two scan modes, structured JSON output, optional SARIF emission, optional MAESTRO 7-layer agentic-AI classification, optional RCI critique loop, optional baseline suppression, optional surgical-fix patches.
+Run an AI-powered security review of code changes in this repository. Detects vulnerabilities across injection, authentication/authorization, data exposure, cryptography, input validation, race conditions, XSS/code execution, insecure configuration, and supply chain. Filters out low-impact noise (denial-of-service, rate-limiting, memory-exhaustion). Two scan modes, structured JSON output, optional SARIF emission, optional MAESTRO 7-layer agentic-AI classification, optional RCI critique loop, optional baseline suppression, optional surgical-fix patches.
 
 ## When to invoke
 
@@ -48,7 +48,7 @@ Arguments compose freely with each other and with positional path arguments. Pas
 | `--json` | Emit raw JSON to stdout instead of the human-readable report. Mutually exclusive with `--sarif`. |
 | `--sarif` | Emit a SARIF v2.1.0 document on stdout. Mutually exclusive with `--json`. |
 | `--maestro` | Add MAESTRO 7-layer classification to every finding (extra `maestro_layer` field). |
-| `--rci <N>` | After the standard dispatch, run `N` recursive-criticism passes (1..3). Default 0. |
+| `--rci [N]` | After the standard dispatch, run `N` recursive-criticism passes. `N` is clamped to `1..3` (bare `--rci`, `< 1`, or non-integer → 1; `> 3` → 3). Default 0 when the flag is absent. |
 | `--baseline <path>` | Load an acknowledged-finding suppression file from `<path>`. Auto-detects `.security-review-baseline.json` when omitted. |
 | `--update-baseline` | After the run, write the current findings to the baseline file (with overwrite confirmation if one exists). |
 | `--patches` | Ask the agent to emit a surgical-fix `patch` field on each finding where a minimal fix exists. |
@@ -78,7 +78,7 @@ The user invoked this skill with the arguments they supplied at invocation time.
 - If `--json` appears anywhere in the list, set `JSON_MODE=true` and remove that token from the list. Otherwise `JSON_MODE=false`.
 - If `--sarif` appears anywhere in the list, set `SARIF_MODE=true` and remove that token from the list. Otherwise `SARIF_MODE=false`. This activates SARIF v2.1.0 output (see Step 5). `--sarif` and `--json` are MUTUALLY EXCLUSIVE: their top-level JSON shapes are incompatible (one is the agent's native schema, the other is the SARIF document). If both flags are present, run a final `exit 2` via the shell with one stderr line `--sarif and --json are mutually exclusive` — do NOT proceed and do NOT pick one silently. When both flags are absent, output is the human-readable report.
 - If `--maestro` appears anywhere in the list, set `MAESTRO_MODE=true` and remove that token from the list. Otherwise `MAESTRO_MODE=false`. This activates MAESTRO 7-layer classification — each finding's JSON gains a `maestro_layer` field, and the human-readable output adds a "By MAESTRO layer" subsection grouping findings by architectural layer. When `MAESTRO_MODE=false`, the `maestro_layer` field MUST NOT appear in the JSON document (preserves byte-identical output for callers that don't opt in). See [Cloud Security Alliance's MAESTRO framework](https://cloudsecurityalliance.org/blog/2025/02/06/agentic-ai-threat-modeling-framework-maestro) for the seven-layer model.
-- If `--rci` appears, set `RCI_PASSES` to the value of the NEXT token if that token parses as an integer in `1..3` — otherwise default `RCI_PASSES=1`. If `--rci` is absent, `RCI_PASSES=0` (no recursive criticism, single dispatch as today). RCI = Recursive Criticism & Improvement: after the standard dispatch produces a findings document, run `RCI_PASSES` additional critique-and-refine dispatches that receive both the prior pass's JSON AND the original input, and asks the agent to drop false positives and surface anything that was missed. OpenSSF documents this technique as reducing security weaknesses by up to an order of magnitude. The cap of 3 bounds cost; `RCI_PASSES > 3` is silently clamped. Combining `--rci` with `--full` is supported but expensive — N=2 over a 41-batch full scan is 41+82 = 123 agent dispatches. See Step 4.5 below for the iteration loop.
+- If `--rci` appears, parse the NEXT token as an integer and set `RCI_PASSES` from it under a single clamp: a value `> 3` clamps to `3`; a value `< 1`, a non-integer token, or a bare `--rci` with no following value defaults to `1`. So `--rci 2` → 2, `--rci 5` → 3, and bare `--rci` → 1. If `--rci` is absent entirely, `RCI_PASSES=0` (no recursive criticism, single dispatch as today). RCI = Recursive Criticism & Improvement: after the standard dispatch produces a findings document, run `RCI_PASSES` additional critique-and-refine dispatches that receive both the prior pass's JSON AND the original input, and asks the agent to drop false positives and surface anything that was missed. OpenSSF documents this technique as reducing security weaknesses by up to an order of magnitude. The cap of `3` bounds cost. Combining `--rci` with `--full` is supported but expensive — N=2 over a 41-batch full scan is 41+82 = 123 agent dispatches. See Step 4.5 below for the iteration loop.
 - If `--baseline` appears, treat the NEXT token as the path to a baseline-suppression file and set `BASELINE_PATH` to that token. Otherwise auto-detect by looking for `.security-review-baseline.json` in the repo root — if present, set `BASELINE_PATH` to that path; if absent, set `BASELINE_PATH=""` (no suppression). A malformed baseline file produces a one-line warning (`Baseline file malformed — proceeding without suppression`) and `BASELINE_PATH=""`. Baseline file schema is `{"schema_version": 1, "generated_at": "<ISO8601>", "acknowledged": [{"fingerprint": "<hex>", "vulnerability_class": "...", "file": "...", "line": 42, "note": "human note"}]}`. Each entry's `fingerprint` is `SHA256(vulnerability_class + "|" + file + "|" + line + "|" + first_80_chars_of_description)`. See Step 4.6 below for the suppression merge.
 - If `--update-baseline` appears, set `UPDATE_BASELINE=true`. After Step 4.6 produces the final findings document, write a baseline file at `BASELINE_PATH` (or `.security-review-baseline.json` if unset) containing every finding from the current run, then print one line: `Baseline updated: <path> (N entries)`. If a baseline already exists at that path, prompt the user with one line: `Overwrite existing baseline at <path>? [y/N]` — abort without writing on anything other than `y`/`Y`.
 - If `--patches` appears, set `PATCHES_MODE=true` and inject a `Patches mode: enabled` directive into the agent's prompt in Step 4 (both modes). This instructs the agent to emit an optional `patch` field (unified-diff text the user could `git apply`) on each finding where a minimal, surgical fix exists. When `--patches` is absent (`PATCHES_MODE=false`), the agent MUST NOT emit a `patch` field — the JSON document stays byte-identical for callers that don't opt in. Patches are opt-in because they cost agent tokens. Surgical-fix only: when the correct fix requires understanding code outside the reviewed unit (refactor, architecture change, new dependency), the agent OMITS the `patch` field on that finding even with --patches set. The skill does NOT auto-apply patches — they're review-and-apply suggestions, not auto-merge changes.
@@ -330,7 +330,7 @@ Active only when `SARIF_MODE=true`. The transform converts the agent's native fi
       "tool": {
         "driver": {
           "name": "stride-security-review",
-          "version": "2.1.0",
+          "version": "<plugin.json version>",
           "informationUri": "https://github.com/cheezy/stride-security-review",
           "rules": [ /* one entry per distinct vulnerability_class present in findings */ ]
         }
@@ -340,6 +340,8 @@ Active only when `SARIF_MODE=true`. The transform converts the agent's native fi
   ]
 }
 ```
+
+`tool.driver.version` is the **emitting tool's own version** — read it from this plugin's `plugin.json` `version` field rather than pinning a literal, so it tracks releases instead of drifting. It is distinct from the SARIF **format** version (`"version": "2.1.0"` at the top level) and the `$schema` URL, which stay fixed at `2.1.0`.
 
 SARIF requires at least one `runs[]` entry, so emit the single-run object even when there are zero findings; in that case `results` is an empty array.
 
@@ -439,7 +441,7 @@ Do NOT print an additional "Gated: N findings at/above <severity>" line — the 
 
 ## Operational rules
 
-- **Honor every flag from Step 1.** `--full`, `--json`, `--maestro`, `--rci`, `--baseline`, `--update-baseline`, and `--patches` are all first-class options. If Step 1 sets `FULL_MODE=true`, you MUST execute Step 2b and Step 4b — do NOT fall back to diff mode under any circumstance, and do NOT invent a "this looks small, I'll just diff it" shortcut. The user opted in by passing the flag; honor it.
+- **Honor every flag from Step 1.** `--full`, `--json`, `--sarif`, `--maestro`, `--rci`, `--baseline`, `--update-baseline`, `--patches`, `--base`, and `--fail-on` are all first-class options. If Step 1 sets `FULL_MODE=true`, you MUST execute Step 2b and Step 4b — do NOT fall back to diff mode under any circumstance, and do NOT invent a "this looks small, I'll just diff it" shortcut. The user opted in by passing the flag; honor it.
 - **Diff mode is the default, not the only mode.** When no `--full` flag is present, scope to the working-tree diff against `HEAD` (Step 2a). When `--full` IS present, scope to every tracked text file under the size cap (Step 2b). Both modes are supported; neither is a footgun.
 - **Diff-mode commands stay diff-mode.** The `git diff HEAD` invocations in Step 2a are diff-mode only — in full mode you use `git ls-files` (Step 2b) and never call `git diff`. Do not mix the two pipelines.
 - **Don't embed the agent prompt here.** The `security-reviewer` agent owns its own prompt — your job is to gather the input and format the output, not to re-specify the analysis methodology.
@@ -448,7 +450,7 @@ Do NOT print an additional "Gated: N findings at/above <severity>" line — the 
 
 ## What the agent does
 
-The `security-reviewer` agent (`agents/security-reviewer.agent.md` in this plugin) receives the diff or per-file content and returns a JSON document with one finding per vulnerability. Vulnerability classes covered: injection, authentication, authorization, data exposure, cryptography, input validation, race conditions, XSS/code execution, insecure configuration. For codebases that wire LLMs / agentic systems / Model Context Protocol clients into the request flow, five additional MAESTRO-derived classes activate: prompt injection, tool abuse, agent trust boundary, model output execution, vector store poisoning. The agentic classes activate only when the file imports an LLM/agentic-system/MCP SDK — see the "Agentic vulnerability classes" section in the agent prompt for the per-language detection signals.
+The `security-reviewer` agent (`agents/security-reviewer.agent.md` in this plugin) receives the diff or per-file content and returns a JSON document with one finding per vulnerability. Vulnerability classes covered: injection, authentication, authorization, data exposure, cryptography, input validation, race conditions, XSS/code execution, insecure configuration, supply chain. For codebases that wire LLMs / agentic systems / Model Context Protocol clients into the request flow, five additional MAESTRO-derived classes activate: prompt injection, tool abuse, agent trust boundary, model output execution, vector store poisoning. The agentic classes activate only when the file imports an LLM/agentic-system/MCP SDK — see the "Agentic vulnerability classes" section in the agent prompt for the per-language detection signals.
 
 The agent operates on **semantic analysis, not pattern matching**. A `grep` hit on `eval(` is not a finding; `eval(user_input)` at a trust boundary is. This is the agent's distinguishing property versus a static analyzer.
 
@@ -460,7 +462,7 @@ Each finding has:
 |---|---|
 | `severity` | `critical`, `high`, `medium`, `low`, or `info` — see the agent prompt for assignment rubric |
 | `file` / `line` | Source location of the issue |
-| `vulnerability_class` | One of the nine classes listed above |
+| `vulnerability_class` | One of the fifteen classes listed above |
 | `cwe` | Array of CWE-IDs (e.g. `["CWE-89"]`) — stable identifier for triage and dashboards |
 | `owasp` | Array of OWASP Top 10 2021 category strings (e.g. `["A03:2021"]`) |
 | `description` | What the vulnerability is, what trust boundary is crossed, what the worst realistic outcome is |

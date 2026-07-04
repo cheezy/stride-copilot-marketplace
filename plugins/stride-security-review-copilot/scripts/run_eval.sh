@@ -162,21 +162,16 @@ build_prompt() {
 
 # invoke_agent <fixture-rel-path> <log-stem>
 # Invokes the agent via $CLAUDE_CLI -p, extracts the fenced JSON block, validates
-# it, and writes the parsed result to $LOG_DIR/<stem>.json. In --dry-run mode
-# writes a stub JSON instead. Echoes the log path on success; exits non-zero on
-# parse/invocation failure (caller treats it as a fixture failure).
+# it, and writes the parsed result to $LOG_DIR/<stem>.json. Echoes the log path on
+# success; exits non-zero on parse/invocation failure (caller treats it as a
+# fixture failure). Not called in --dry-run mode: the main loop skips per-fixture
+# comparison there and emits a TAP SKIP instead (no API output to compare against).
 invoke_agent() {
   local rel="$1"
   local stem="$2"
   local out_json="$LOG_DIR/$stem.json"
   local raw="$LOG_DIR/$stem.raw.txt"
   mkdir -p "$LOG_DIR"
-
-  if [ "$DRY_RUN" -eq 1 ]; then
-    printf '{"findings":[],"summary":{"files_reviewed":1,"findings_by_severity":{"critical":0,"high":0,"medium":0,"low":0,"info":0}}}\n' > "$out_json"
-    printf '%s' "$out_json"
-    return 0
-  fi
 
   local prompt
   prompt="$(build_prompt "$rel")"
@@ -354,6 +349,45 @@ emit_tap() {
   printf '%s %d - %s (%s)\n' "$status" "$n" "$fixture" "$detail"
 }
 
+# check_fixture_drift <record>...
+# Cross-checks the set of fixture files under FIXTURES_DIR (recursive, EXPECTED.md
+# excluded) against the set of paths referenced by EXPECTED.md rows. Both sets use
+# FIXTURES_DIR-relative paths (e.g. ci_cd/github_unpinned.yml), so the recursive
+# enumeration must strip the FIXTURES_DIR prefix before comparing. Dies (exit 2)
+# naming every divergence when the two sets are not one-to-one, so a fixture added
+# without an EXPECTED.md row (silently untested) or a row pointing at a missing file
+# is caught before any agent dispatch. Runs in --dry-run too (no API needed) and
+# honors FIXTURES_DIR. Negative-control (__NONE__) rows still reference a real
+# fixture file, so their paths are part of the expected set.
+check_fixture_drift() {
+  local expected=() actual=()
+  local rec f
+  for rec in "$@"; do
+    expected+=("${rec%%$'\t'*}")
+  done
+  while IFS= read -r f; do
+    actual+=("${f#"$FIXTURES_DIR/"}")
+  done < <(find "$FIXTURES_DIR" -type f ! -name 'EXPECTED.md')
+
+  local missing_file missing_row
+  missing_file="$(comm -23 <(sort -u <(printf '%s\n' "${expected[@]}")) <(sort -u <(printf '%s\n' "${actual[@]}")))"
+  missing_row="$(comm -13 <(sort -u <(printf '%s\n' "${expected[@]}")) <(sort -u <(printf '%s\n' "${actual[@]}")))"
+
+  if [ -n "$missing_file" ] || [ -n "$missing_row" ]; then
+    local msg="fixture/EXPECTED.md drift detected under ${FIXTURES_DIR}:"
+    local p
+    if [ -n "$missing_file" ]; then
+      msg="${msg}"$'\n'"  referenced by an EXPECTED.md row but no fixture file exists:"
+      while IFS= read -r p; do msg="${msg}"$'\n'"    - ${p}"; done <<<"$missing_file"
+    fi
+    if [ -n "$missing_row" ]; then
+      msg="${msg}"$'\n'"  fixture file present but missing an EXPECTED.md row:"
+      while IFS= read -r p; do msg="${msg}"$'\n'"    - ${p}"; done <<<"$missing_row"
+    fi
+    die "$msg"
+  fi
+}
+
 main() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -385,6 +419,11 @@ main() {
   if [ "${#records[@]}" -eq 0 ]; then
     die "no fixture expectations parsed from $EXPECTED_FILE"
   fi
+
+  # Guard against fixture/EXPECTED.md drift across the whole suite before any
+  # single-fixture narrowing, so a divergence is reported even when --fixture or
+  # --dry-run is in play.
+  check_fixture_drift "${records[@]}"
 
   # Filter to single fixture if requested.
   if [ -n "$SINGLE_FIXTURE" ]; then
@@ -421,6 +460,14 @@ main() {
       [ "$count" -gt 1 ] && detail="$detail x$count"
     fi
 
+    # --dry-run is a structural check (EXPECTED.md parse + fixture drift guard,
+    # both already run above); there is no agent output to compare against, so
+    # emit a TAP SKIP per fixture rather than invoking the agent or comparator.
+    if [ "$DRY_RUN" -eq 1 ]; then
+      printf 'ok %d - %s (%s) # SKIP dry-run: structural check only (no API)\n' "$n" "$path" "$detail"
+      continue
+    fi
+
     local json
     if ! json="$(invoke_agent "$path" "$stem")"; then
       emit_tap "$n" "not ok" "$path" "$detail (agent invocation failed)"
@@ -435,6 +482,11 @@ main() {
       fails=$((fails+1))
     fi
   done
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '# dry-run: %d fixtures planned; EXPECTED.md parse and fixture drift guard passed (no API comparison)\n' "$total"
+    exit 0
+  fi
 
   local passed=$((total - fails))
   printf '# %d/%d passed\n' "$passed" "$total"

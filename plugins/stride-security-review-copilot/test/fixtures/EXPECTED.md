@@ -149,7 +149,7 @@ A passing full-scan smoke test:
 ### Regression checks specific to full mode
 
 - **Enumeration regression:** if `summary.files_reviewed` is less than 5, either `git ls-files` is being misused (e.g., a filesystem walk crept back in and is excluding tracked files) or the size cap / binary filter is mis-thresholded.
-- **Header regression:** if the header is missing the `(full scan)` qualifier or is reporting M files as a diff-line count, Step 5 of `commands/security-review.md` has lost its mode-aware branching.
+- **Header regression:** if the header is missing the `(full scan)` qualifier or is reporting M files as a diff-line count, Step 5 of `skills/security-review-essentials/SKILL.md` has lost its mode-aware branching.
 - **False-positive regression on docs:** if `EXPECTED.md` produces a finding, the agent prompt's false-positive filter has weakened for prose-only files.
 - **Schema drift:** the JSON document shape must be byte-for-byte identical between diff and full modes. The per-finding fields are: `severity`, `file`, `line`, `vulnerability_class`, `cwe`, `owasp`, `description`, `remediation`, `confidence`. Missing any of those fields, or introducing a new top-level key without updating this expectation, is a regression. The `cwe` and `owasp` fields were added in plugin v1.2.0 and must populate per the table above for every concrete finding — empty arrays only for true-defense-in-depth notes where no CWE/OWASP category applies.
 

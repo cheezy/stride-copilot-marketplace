@@ -97,7 +97,7 @@ A passing smoke test means:
 
 If both checks pass, the plugin is loaded, the agent prompt is intact, the skill's argument-parsing and dispatch logic work end-to-end, and the framework rule packs survived the port. Move on with confidence.
 
-For a more thorough check against all 61 fixtures, run the eval suite from `scripts/run_eval.sh` once the Copilot CLI batch-mode replacement lands (see the TODO header in that file).
+For a more thorough check against all 64 fixtures, run the eval suite from `scripts/run_eval.sh` once the Copilot CLI batch-mode replacement lands (see the TODO header in that file).
 
 ## 5. Failure modes
 

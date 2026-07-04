@@ -52,7 +52,7 @@ lib/ test/                    # scope to directories
 
 # Recursive Criticism & Improvement (--rci [N]) — run N additional critique passes
 --rci                         # one extra critique pass after the first dispatch
---rci 2                       # two extra critique passes (clamped to 3)
+--rci 2                       # two extra critique passes (N is clamped to a max of 3)
 --rci --full                  # critique pass over a full scan (expensive)
 
 # Baseline suppression (--baseline) — suppress already-acknowledged findings

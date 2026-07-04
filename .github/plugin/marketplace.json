@@ -23,8 +23,8 @@
     },
     {
       "name": "stride-security-review-copilot",
-      "description": "AI-powered security review for code changes via the /stride-security-review:security-review slash command: multi-language semantic vulnerability detection with SARIF output and CI severity gating.",
-      "version": "0.1.0",
+      "description": "AI-powered security review for code changes via the security-review-essentials skill: multi-language semantic vulnerability detection with SARIF output and CI severity gating.",
+      "version": "0.2.0",
       "source": "./plugins/stride-security-review-copilot"
     },
     {

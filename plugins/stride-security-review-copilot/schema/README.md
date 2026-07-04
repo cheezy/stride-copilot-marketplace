@@ -28,7 +28,7 @@ claude -p "/stride-security-review:security-review --sarif" \
 
 ## Field mapping reference
 
-The agent's native finding schema and the SARIF v2.1.0 result shape don't line up 1:1. See `commands/security-review.md` "SARIF v2.1.0 mapping" subsection for the full field-by-field transform. A summary:
+The agent's native finding schema and the SARIF v2.1.0 result shape don't line up 1:1. See `skills/security-review-essentials/SKILL.md` "SARIF v2.1.0 mapping" subsection for the full field-by-field transform. A summary:
 
 | Finding field | SARIF field |
 |---|---|
