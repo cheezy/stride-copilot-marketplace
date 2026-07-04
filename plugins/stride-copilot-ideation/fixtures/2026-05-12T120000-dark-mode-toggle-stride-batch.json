@@ -28,13 +28,41 @@
           "description": "Replace bg-white, text-gray-900, border-gray-200, etc. with bg-base-100, text-base-content, border-base-300 in lib/app_web/components/core_components.ex so dark mode can swap palettes by flipping data-theme alone.",
           "acceptance_criteria": "All hardcoded Tailwind colors in core_components.ex replaced with daisyUI semantic tokens\nLight-mode rendering unchanged on the 14 known routes\nGrep for hardcoded Tailwind color classes returns zero hits in core_components",
           "patterns_to_follow": "Use daisyUI semantic tokens listed in app.css (bg-base-100, text-base-content, border-base-300, etc.)\nDo not introduce hex colors or arbitrary Tailwind values",
-          "pitfalls": ["Do not change component prop names or behavior — color migration only"],
+          "pitfalls": [
+            "Do not change component prop names or behavior — color migration only"
+          ],
           "dependencies": [],
           "key_files": [
-            {"file_path": "lib/app_web/components/core_components.ex", "note": "Color migration target", "position": 0}
+            {
+              "file_path": "lib/app_web/components/core_components.ex",
+              "note": "Color migration target",
+              "position": 0
+            }
           ],
           "verification_steps": [
-            {"step_type": "command", "step_text": "grep -E 'bg-white|text-gray-[0-9]|border-gray-[0-9]' lib/app_web/components/core_components.ex", "expected_result": "no matches", "position": 0}
+            {
+              "step_type": "command",
+              "step_text": "grep -E 'bg-white|text-gray-[0-9]|border-gray-[0-9]' lib/app_web/components/core_components.ex",
+              "expected_result": "no matches",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "unit_tests": [
+              "Existing core_components render tests still pass unchanged after the token swap (no markup/attribute drift beyond class values)",
+              "Snapshot/render assertions for buttons, inputs, and flash confirm daisyUI token classes (bg-base-100, text-base-content, border-base-300) are emitted instead of bg-white/text-gray-900/border-gray-200"
+            ],
+            "manual_tests": [
+              "Walk all 14 known routes in light mode and confirm rendering is visually identical to the pre-migration baseline"
+            ],
+            "edge_cases": [
+              "grep -E 'bg-white|text-gray-[0-9]|border-gray-[0-9]' over core_components.ex returns zero hits (the task's verification command)",
+              "Arbitrary Tailwind values and hex colors (e.g. bg-[#fff]) are not introduced as a shortcut during the swap"
+            ],
+            "coverage_target": "No coverage regression in core_components render tests; grep-for-hardcoded-shades returns zero matches"
+          },
+          "security_considerations": [
+            "Pure CSS-class migration in core_components.ex — no auth, user input, or data-access surface is touched"
           ]
         },
         {
@@ -46,13 +74,42 @@
           "description": "Same migration as the previous task, applied to lib/app_web/components/delayed_modal.ex. Necessary so modal overlays match the rest of the UI when the theme flips.",
           "acceptance_criteria": "All hardcoded Tailwind colors in delayed_modal.ex replaced with daisyUI tokens\nModal overlay backdrop uses bg-base-200/90 not bg-black/50\nLight-mode modal rendering visually unchanged",
           "patterns_to_follow": "Mirror the token choices used in core_components.ex",
-          "pitfalls": ["Do not touch modal interaction logic — color migration only"],
-          "dependencies": [0],
+          "pitfalls": [
+            "Do not touch modal interaction logic — color migration only"
+          ],
+          "dependencies": [
+            0
+          ],
           "key_files": [
-            {"file_path": "lib/app_web/components/delayed_modal.ex", "note": "Modal-overlay color migration", "position": 0}
+            {
+              "file_path": "lib/app_web/components/delayed_modal.ex",
+              "note": "Modal-overlay color migration",
+              "position": 0
+            }
           ],
           "verification_steps": [
-            {"step_type": "manual", "step_text": "Open a modal in light mode and confirm visual rendering unchanged from baseline", "expected_result": "No visual regression", "position": 0}
+            {
+              "step_type": "manual",
+              "step_text": "Open a modal in light mode and confirm visual rendering unchanged from baseline",
+              "expected_result": "No visual regression",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "unit_tests": [
+              "delayed_modal render tests still pass and assert the backdrop class is bg-base-200/90 rather than bg-black/50"
+            ],
+            "manual_tests": [
+              "Open a modal in light mode and confirm the overlay and panel render visually unchanged from the baseline screenshot (the task's verification step)"
+            ],
+            "edge_cases": [
+              "grep for bg-white/text-gray-*/border-gray-*/bg-black over delayed_modal.ex returns zero hits",
+              "Token choices mirror those already landed in core_components.ex (no divergent palette for the modal)"
+            ],
+            "coverage_target": "No coverage regression in delayed_modal render tests"
+          },
+          "security_considerations": [
+            "Pure CSS-class migration in delayed_modal.ex — modal interaction logic is untouched and no auth, user input, or data-access surface is involved"
           ]
         },
         {
@@ -64,14 +121,49 @@
           "description": "Add a string column theme to user_preferences (or create the table if absent) with values 'light' or 'dark'. Default 'light'. Adds the storage that the LiveView toggle will write to and the FOUC script will read from.",
           "acceptance_criteria": "Migration creates or extends user_preferences with a theme string column\nDefault value is 'light'\nUser schema exposes the new field via the existing changeset",
           "patterns_to_follow": "Mirror the existing migration style under priv/repo/migrations/\nUse a string column with a check constraint, not an enum (daisyUI grows palettes; check constraint can widen)",
-          "pitfalls": ["Do not migrate existing rows — let them fall back to the default"],
+          "pitfalls": [
+            "Do not migrate existing rows — let them fall back to the default"
+          ],
           "dependencies": [],
           "key_files": [
-            {"file_path": "priv/repo/migrations/", "note": "New migration file", "position": 0},
-            {"file_path": "lib/app/accounts/user.ex", "note": "Expose theme through the changeset", "position": 1}
+            {
+              "file_path": "priv/repo/migrations/",
+              "note": "New migration file",
+              "position": 0
+            },
+            {
+              "file_path": "lib/app/accounts/user.ex",
+              "note": "Expose theme through the changeset",
+              "position": 1
+            }
           ],
           "verification_steps": [
-            {"step_type": "command", "step_text": "mix ecto.migrate", "expected_result": "migration runs successfully", "position": 0}
+            {
+              "step_type": "command",
+              "step_text": "mix ecto.migrate",
+              "expected_result": "migration runs successfully",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "unit_tests": [
+              "User changeset casts and accepts theme values 'light' and 'dark'",
+              "Changeset (or DB check constraint) rejects an out-of-range theme value such as 'neon'",
+              "A user_preferences row created without an explicit theme defaults to 'light'"
+            ],
+            "integration_tests": [
+              "mix ecto.migrate runs the new migration successfully (the task's verification command)",
+              "mix ecto.rollback reverts the theme column cleanly, then re-migrates"
+            ],
+            "edge_cases": [
+              "Pre-existing user_preferences rows are NOT rewritten by the migration and fall back to the 'light' default",
+              "NULL theme reads back as the 'light' default rather than crashing preference lookups"
+            ],
+            "coverage_target": "100% of the User changeset branches touching :theme covered"
+          },
+          "security_considerations": [
+            "Theme reads and writes must be scoped to the current user — a user may only read or update their own user_preferences.theme, never another user's row",
+            "Constrain theme to the 'light'/'dark' allow-list via a DB check constraint and changeset validation so an attacker cannot persist arbitrary strings into the column that later feed the FOUC script or data-theme attribute"
           ]
         },
         {
@@ -83,14 +175,51 @@
           "description": "Add a small LiveView component that renders a sun/moon icon button. Clicking it sends a phx-click event that updates the user's preference and pushes the data-theme attribute change to the DOM via a JS hook.",
           "acceptance_criteria": "Component renders in the app header\nClick toggles between light/dark in under 50ms\nUser preference column updates atomically with the visual change\nKeyboard accessible (Enter/Space activate)",
           "patterns_to_follow": "Use the existing core_components button + icon idioms\nUpdate the preference through MyApp.Accounts, not Repo directly",
-          "pitfalls": ["Do not flash the wrong-theme paint on toggle — push the attribute change before the LiveView re-renders"],
-          "dependencies": [0, 2],
+          "pitfalls": [
+            "Do not flash the wrong-theme paint on toggle — push the attribute change before the LiveView re-renders"
+          ],
+          "dependencies": [
+            0,
+            2
+          ],
           "key_files": [
-            {"file_path": "lib/app_web/components/theme_toggle.ex", "note": "New component", "position": 0},
-            {"file_path": "lib/app_web/components/layouts/root.html.heex", "note": "Wire into header", "position": 1}
+            {
+              "file_path": "lib/app_web/components/theme_toggle.ex",
+              "note": "New component",
+              "position": 0
+            },
+            {
+              "file_path": "lib/app_web/components/layouts/root.html.heex",
+              "note": "Wire into header",
+              "position": 1
+            }
           ],
           "verification_steps": [
-            {"step_type": "manual", "step_text": "Click the toggle in both modes; observe no FOUC and the preference persists across reloads", "expected_result": "Smooth transition, persistent state", "position": 0}
+            {
+              "step_type": "manual",
+              "step_text": "Click the toggle in both modes; observe no FOUC and the preference persists across reloads",
+              "expected_result": "Smooth transition, persistent state",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "unit_tests": [
+              "Component renders a sun/moon icon button in the header using the existing core_components button + icon idioms",
+              "Button is keyboard operable — Enter and Space activate the toggle (accessible name / aria present)"
+            ],
+            "integration_tests": [
+              "phx-click toggles the theme and persists it through MyApp.Accounts (not Repo directly), and the new value survives a page reload",
+              "The data-theme attribute is pushed to the DOM via the JS hook before the LiveView re-render so no wrong-theme paint flashes on toggle"
+            ],
+            "edge_cases": [
+              "Rapid double-click / repeated toggles converge to a single consistent persisted value (no race between the DOM push and the Accounts write)",
+              "Toggle is exercised in both starting states (light->dark and dark->light)"
+            ],
+            "coverage_target": "Full branch coverage of the component's handle_event toggle logic"
+          },
+          "security_considerations": [
+            "The phx-click handler must derive the target user from current_scope/session, never from a client-supplied user_id, so one user cannot flip another user's theme preference",
+            "Persist the preference through MyApp.Accounts with changeset validation rather than writing to Repo directly, keeping the 'light'/'dark' allow-list enforced on the write path"
           ]
         },
         {
@@ -102,13 +231,48 @@
           "description": "Add a tiny inline script at the top of the head that reads the theme preference (from cookie for guests, from data attribute on body for logged-in users injected server-side) and sets data-theme on the html element before stylesheets load. Eliminates the wrong-theme flash on first paint.",
           "acceptance_criteria": "Inline script runs before <link rel=\"stylesheet\"> tags\nNo visible wrong-theme flash on first paint in dark mode\nScript is <500 bytes inline so it doesn't bloat the document head",
           "patterns_to_follow": "Server-side renders the user's preference into a data attribute on body when authenticated\nFalls back to a cookie for guests so toggle works pre-login too",
-          "pitfalls": ["Do not load external JS for this — it MUST be inline to beat the FOUC window"],
-          "dependencies": [2, 3],
+          "pitfalls": [
+            "Do not load external JS for this — it MUST be inline to beat the FOUC window"
+          ],
+          "dependencies": [
+            2,
+            3
+          ],
           "key_files": [
-            {"file_path": "lib/app_web/components/layouts/root.html.heex", "note": "Inline script + body data attribute", "position": 0}
+            {
+              "file_path": "lib/app_web/components/layouts/root.html.heex",
+              "note": "Inline script + body data attribute",
+              "position": 0
+            }
           ],
           "verification_steps": [
-            {"step_type": "manual", "step_text": "Hard-reload in dark mode and watch for a flash — there must be none", "expected_result": "No flash", "position": 0}
+            {
+              "step_type": "manual",
+              "step_text": "Hard-reload in dark mode and watch for a flash — there must be none",
+              "expected_result": "No flash",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Hard-reload in dark mode and watch for a wrong-theme flash — there must be none (the task's verification step)",
+              "Confirm via view-source / devtools that the inline script appears before the <link rel=\"stylesheet\"> tags in the head"
+            ],
+            "integration_tests": [
+              "Authenticated request renders the user's saved preference into the body data attribute and the inline script applies it to <html> before stylesheets load",
+              "Guest request reads the preference from the cookie so the pre-login toggle still takes effect on first paint"
+            ],
+            "edge_cases": [
+              "JavaScript disabled / no-JS: page still renders in the server-rendered default theme without erroring",
+              "localStorage or cookie unavailable (private mode, blocked storage): script falls back to the default theme instead of throwing",
+              "Missing or unrecognized preference value falls back to 'light' rather than leaving data-theme unset",
+              "Inline script stays under the 500-byte budget so it does not bloat the document head"
+            ],
+            "coverage_target": "Both authenticated (data-attribute) and guest (cookie) preference-source branches exercised"
+          },
+          "security_considerations": [
+            "The server-rendered preference injected into the inline head script and body data attribute must be a validated 'light'/'dark' enum, never raw user input, to prevent HTML/JS injection into the <head> script context",
+            "Because this is an inline <script>, verify it is compatible with the app's Content-Security-Policy (nonce/hash) so tightening CSP later does not silently disable FOUC prevention"
           ]
         }
       ]

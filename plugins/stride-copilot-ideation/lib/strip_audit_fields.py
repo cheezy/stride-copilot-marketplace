@@ -5,11 +5,11 @@ Usage:
     python3 lib/strip_audit_fields.py <path-to-stride-batch.json>
 
 Reads the file at the given path, removes the three local-audit fields
-(`source_spec`, `source_spec_sha256`, `decomposition_notes`) that
-`/stride-ideation:decompose` stamped at the root, and prints the
+(`source_spec`, `source_spec_sha256`, `decomposition_notes`) that the
+stride-ideation-stridify skill stamped at the root, and prints the
 API-ready payload to stdout. Exits 0 on success.
 
-The resulting JSON is what `/stride-ideation:ship` POSTs to
+The resulting JSON is what the stride-ideation-stridify skill POSTs to
 Stride's `/api/tasks/batch` endpoint. The three stripped fields are
 useful for local audit and drift detection but the Stride API does
 not accept them and silently drops them — better to strip
@@ -18,12 +18,22 @@ explicitly so the on-the-wire payload matches the API contract.
 Exits 1 with a stderr message if the file cannot be read or parsed.
 Field-shape validation is NOT performed here — that is the job of
 `lib/validate_batch.py`. Run the validator before stripping.
+
+The per-goal `created_by_agent` attribution field is intentionally NOT in
+`LOCAL_AUDIT_FIELDS`: it is a create-payload field the Stride API accepts and
+persists for the `/agents` activity feed, so it must survive this strip and
+reach the wire. Adding it here would silently un-attribute every shipped batch.
 """
 
 import json
 import sys
 
 
+# Never add created_by_agent here: it is a create-payload field the API
+# accepts and persists for attribution (stamped per-goal by the stridify skill,
+# Step 8b), not a local audit field — stripping it would silently un-attribute
+# every shipped batch. lib/test-ship-helpers.sh has a regression asserting it
+# survives the strip while the three audit fields are removed.
 LOCAL_AUDIT_FIELDS = ("source_spec", "source_spec_sha256", "decomposition_notes")
 
 

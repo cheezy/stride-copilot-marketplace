@@ -36,6 +36,20 @@ For every requirements doc you process, walk this checklist in order:
 
 6. **Justify every `verification_steps` entry.** Each verification step must be either a `command` you would confidently run yourself given only the requirements doc + the task's stated `key_files`, or a `manual` check the user can perform without leaving the kanban UI. Do not invent commands you cannot justify from the doc — `"mix test --some-fake-flag"` or `"npm run e2e:notifications"` are both red flags when the doc does not establish that those commands exist. When in doubt, prefer `step_type: "manual"` with a description over an invented `command`.
 
+## Five review-queue scored fields
+
+The Stride review queue **scores five per-task fields** on how completely each generated task specifies its work. Every task you emit should populate all five so it scores well when a human reviews it:
+
+| Field | Shape | What it captures |
+|---|---|---|
+| `acceptance_criteria` | newline-separated string (NOT an array) | The definition of done — specific, checkable criteria |
+| `patterns_to_follow` | newline-separated string (NOT an array) | Existing code patterns the implementer should mirror |
+| `pitfalls` | array of strings | What NOT to do — traps the implementer should avoid |
+| `testing_strategy` | flat object (values are strings or arrays of strings) | How the task is tested — unit, integration, edge cases |
+| `security_considerations` | array of strings | Security-relevant concerns the implementer must address |
+
+A task that omits any of these scores poorly. `security_considerations` is the field most often dropped — **never leave it out**, even when the only defensible entry is that the change introduces no new security surface (say so explicitly rather than omitting the field). The canonical skeleton and all three worked examples below populate every one of the five.
+
 ## Stride batch JSON shape (canonical)
 
 The root key is **`"goals"` — never `"tasks"`**. Sending `{"tasks": [...]}` is the most common batch-API mistake and the API returns a 422 with an explicit error message. The full skeleton, with one-line annotations:
@@ -70,6 +84,7 @@ The root key is **`"goals"` — never `"tasks"`**. Sending `{"tasks": [...]}` is
           "acceptance_criteria": "string — newline-separated criteria (NOT an array)",
           "patterns_to_follow": "string — newline-separated (NOT an array)",
           "pitfalls": ["string"],
+          "security_considerations": ["string — a security-relevant concern (array of strings; state 'no new security surface' explicitly if none)"],
           "dependencies": [0],
           "key_files": [
             {"file_path": "lib/app/foo.ex", "note": "why touched", "position": 0}
@@ -115,6 +130,7 @@ Other format gotchas worth pinning explicitly:
 The calling skill (`stride-ideation-stridify`) and the Stride API enforce strict allow-lists. Do not include any of the following in your output:
 
 - **`source_spec`** and **`source_spec_sha256`** — the calling command stamps these at the JSON root after you return. If you emit them, the orchestrator overwrites them.
+- **`created_by_agent`** — a runtime value you cannot know; the calling skill stamps it onto each goal at ship time, after you return. If you emit it, the orchestrator overwrites it.
 - **`identifier`** (W-/D-/G-prefixed strings) — auto-generated server-side. Specifying one fails the batch.
 - **`status`**, **`position`**, **`claimed_at`**, **`claim_expires_at`** — workflow-managed fields the server controls.
 - **`completed_at`**, **`completed_by_*`**, **`completion_summary`**, **`actual_complexity`**, **`actual_files_changed`**, **`time_spent_minutes`** — actuals recorded at task completion.
@@ -172,7 +188,15 @@ Input (excerpt): a requirements doc for "add a dark mode toggle" — single seam
           "verification_steps": [
             {"step_type": "command", "step_text": "grep -E 'bg-white|text-gray-900|border-gray-200' lib/app_web/components/core_components.ex", "expected_result": "no matches", "position": 0},
             {"step_type": "manual", "step_text": "Spot-check 3 routes in light mode in the browser", "expected_result": "Visual rendering unchanged from baseline", "position": 1}
-          ]
+          ],
+          "security_considerations": ["Color-token migration touches no auth, input handling, or data access — no new security surface is introduced"],
+          "testing_strategy": {
+            "unit_tests": [],
+            "integration_tests": [],
+            "manual_tests": ["Visually compare the 14 known routes in light mode against baseline screenshots"],
+            "edge_cases": ["Components that set colors via inline style attributes rather than Tailwind classes"],
+            "coverage_target": ""
+          }
         }
       ]
     }
@@ -218,7 +242,15 @@ Input (excerpt): a requirements doc for "notifications system" — three orthogo
           ],
           "verification_steps": [
             {"step_type": "command", "step_text": "mix test test/app/notifications/queue_test.exs", "expected_result": "All tests pass", "position": 0}
-          ]
+          ],
+          "security_considerations": ["Scope the dedupe key by recipient_id so one user's events can never collide with another's", "Notification payloads may carry user-visible content — do not log full payloads at info level"],
+          "testing_strategy": {
+            "unit_tests": ["Dedupe drops a second event with the same (recipient_id, event_class)", "Distinct event classes for the same recipient are not deduped"],
+            "integration_tests": ["Enqueue through the real Oban queue and assert a single worker execution per dedupe group"],
+            "manual_tests": [],
+            "edge_cases": ["Two events arriving in the same transaction", "Recipient with no prior notifications"],
+            "coverage_target": "Dedupe path covered by unit tests"
+          }
         }
       ]
     }
@@ -267,7 +299,15 @@ The decomposer would split at the layer seam and emit two goals in claim order. 
           ],
           "verification_steps": [
             {"step_type": "command", "step_text": "mix test test/app/notifications/notification_test.exs", "expected_result": "All tests pass", "position": 0}
-          ]
+          ],
+          "security_considerations": ["payload is a free-form map — validate its shape in the changeset so callers cannot persist arbitrary unbounded data", "recipient_id must reference an existing user; enforce the foreign-key constraint at the DB level"],
+          "testing_strategy": {
+            "unit_tests": ["Changeset accepts a valid notification", "Changeset rejects a missing recipient_id, event_class, or payload"],
+            "integration_tests": [],
+            "manual_tests": [],
+            "edge_cases": ["read_at defaults to nil for a freshly created notification", "payload is an empty map"],
+            "coverage_target": "Changeset happy and error paths covered"
+          }
         }
         // ... 5 more tasks: migration, preferences schema, create_notification, list_for_user, mark_read context functions
       ]
@@ -302,7 +342,15 @@ The decomposer would split at the layer seam and emit two goals in claim order. 
           ],
           "verification_steps": [
             {"step_type": "command", "step_text": "mix test test/app_web/live/notifications/notifications_live_test.exs", "expected_result": "All tests pass", "position": 0}
-          ]
+          ],
+          "security_considerations": ["Scope the mount query to the current user so a claimant cannot view another user's notifications", "Verify the mark_read handler authorizes ownership before mutating a notification"],
+          "testing_strategy": {
+            "unit_tests": ["Mount assigns the current user's notifications", "handle_event(\"mark_read\", ...) marks the notification read"],
+            "integration_tests": ["Full LiveView render cycle from mount through a mark-read click"],
+            "manual_tests": [],
+            "edge_cases": ["A user with zero notifications renders an empty state", "mark_read on an already-read notification is idempotent"],
+            "coverage_target": "Mount and handle_event paths covered"
+          }
         }
         // ... 7 more tasks: Presence wiring, unread badge, preferences form component, header indicator, mark-all-read action, route auth, telemetry
       ]

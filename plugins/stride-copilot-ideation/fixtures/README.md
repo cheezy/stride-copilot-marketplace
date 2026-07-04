@@ -11,11 +11,13 @@ The fixtures are **not** training data. The decomposer prompt should produce the
 
 ## The three pairs
 
+> **Every task in all three batch pairs carries the five review-queue scored fields** — `testing_strategy`, `security_considerations`, `patterns_to_follow`, `pitfalls`, and `acceptance_criteria`. The Stride review queue scores these five per-task fields, so the fixtures deliberately model complete, well-scoring decomposer output: an implementer copying any task from these references gets all five demonstrated with topic-appropriate content (see `agents/requirements-decomposer.agent.md` § "Five review-queue scored fields").
+
 ### 1. Small / single-goal — `dark-mode-toggle`
 
 - **Requirements:** `2026-05-12T120000-dark-mode-toggle-requirements.md`
 - **Batch:** `2026-05-12T120000-dark-mode-toggle-stride-batch.json`
-- **Shape:** 1 goal, 5 tasks
+- **Shape:** 1 goal, 5 tasks — every task carries all five scored fields
 
 A small feature where all work lives in one Phoenix layer (the UI). The decomposer keeps everything in a single goal because the tasks are code-coupled — tokens must land before the toggle component can reference them; persistence must land before the FOUC script can read it. No cross-goal coordination needed; `decomposition_notes` explicitly states this.
 
@@ -25,7 +27,7 @@ This is what the decomposer produces for the bulk of single-seam feature work: s
 
 - **Requirements:** `2026-05-12T120100-notifications-system-requirements.md`
 - **Batch:** `2026-05-12T120100-notifications-system-stride-batch.json`
-- **Shape:** 3 goals, 16 tasks total
+- **Shape:** 3 goals, 16 tasks total — every task carries all five scored fields
 
 An initiative whose `Sketch` section explicitly named three orthogonal seams: event detection + queue (G1), user preferences UI (G2), email rendering + dispatch (G3). The decomposer splits along those seam boundaries.
 
@@ -35,7 +37,7 @@ G2 (preferences UI) is fully independent of the other two — it can be claimed 
 
 - **Requirements:** `2026-05-12T120200-replace-test-suite-requirements.md`
 - **Batch:** `2026-05-12T120200-replace-test-suite-stride-batch.json`
-- **Shape:** 2 goals, 14 tasks total
+- **Shape:** 2 goals, 14 tasks total — every task carries all five scored fields
 
 A decision-then-execute initiative. Without splitting, this would be a single goal of 14 tasks — past the ~10-task soft cap from the decomposer's methodology. The natural seam is **decide vs execute**: G1 owns measurement + the recommendation document; G2 picks up the first vertical slice from whichever path the recommendation selects.
 

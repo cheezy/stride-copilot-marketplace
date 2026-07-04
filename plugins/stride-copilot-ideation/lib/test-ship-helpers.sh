@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit tests for the /stride-ideation:ship helpers:
+# Unit tests for the stride-ideation-stridify ship-step helpers:
 #
 #   - lib/strip_audit_fields.py  strips source_spec/sha256/decomposition_notes
 #   - lib/read_auth.py            extracts STRIDE_API_URL and STRIDE_API_TOKEN
@@ -107,6 +107,37 @@ if STRIPPED2="$(python3 "$STRIP" "$TMP/no_audit.json" 2>&1)"; then
   fi
 else
   fail "strip: failed on input that already lacked audit fields"
+fi
+
+# --- strip_audit_fields: created_by_agent survives the strip ----------------
+# AC (W1543): created_by_agent is a per-goal create-payload field the Stride
+# API persists for attribution in the /agents feed. Only the three root
+# local-audit fields (source_spec/source_spec_sha256/decomposition_notes) are
+# stripped; the per-goal created_by_agent MUST survive to the API payload.
+
+cat > "$TMP/with_created_by.json" <<'EOF'
+{
+  "source_spec": "fixtures/x.md",
+  "source_spec_sha256": "abc123",
+  "decomposition_notes": "notes",
+  "goals": [
+    {"title": "G1", "type": "goal", "created_by_agent": "GitHub Copilot", "tasks": [{"title": "T1", "type": "work"}]}
+  ]
+}
+EOF
+
+if STRIPPED3="$(python3 "$STRIP" "$TMP/with_created_by.json" 2>&1)"; then
+  if printf '%s' "$STRIPPED3" | grep -q 'created_by_agent'; then
+    if ! printf '%s' "$STRIPPED3" | grep -qE 'source_spec|decomposition_notes'; then
+      pass "strip: preserves per-goal created_by_agent while removing the three audit fields"
+    else
+      fail "strip: created_by_agent survived but an audit field was not stripped" "$STRIPPED3"
+    fi
+  else
+    fail "strip: stripped created_by_agent (it must survive to the API payload)" "$STRIPPED3"
+  fi
+else
+  fail "strip: exited non-zero on input carrying created_by_agent" "$STRIPPED3"
 fi
 
 # --- strip_audit_fields: malformed JSON -------------------------------------

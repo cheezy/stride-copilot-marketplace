@@ -4,6 +4,22 @@ All notable changes to the `stride-copilot-ideation` plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-04
+
+Hardens the `stride-ideation-stridify` decomposition-and-ship pipeline around the Stride review queue's **five per-task scored fields** — `acceptance_criteria`, `testing_strategy`, `security_considerations`, `pitfalls`, `patterns_to_follow` — so generated tasks score well, are attributed to the creating agent, and are caught before the API rejects them. Also completes the port of the core round-loop protocol to the Copilot selection primitive. All changes are additive and behavior-compatible.
+
+### Added
+
+- **Decomposer contract names the five review-queue scored fields (`agents/requirements-decomposer.agent.md`).** Added a "Five review-queue scored fields" subsection that names all five and states the review queue scores them, added `security_considerations` (with a shape annotation) to the canonical task skeleton, and enriched one fully populated example task in each of the three worked examples so every scored field is demonstrated. `created_by_agent` is also added to the agent's "What you MUST NOT emit" list — it is a runtime value the orchestrator stamps at ship time.
+- **`created_by_agent` stamping in the stridify pipeline (`skills/stride-ideation-stridify/SKILL.md` Step 8b).** The skill now stamps `created_by_agent` onto every goal object at ship time so each shipped goal (and its propagated child tasks) is attributed to the creating agent in Stride's `/agents` activity feed. The field is a create-payload field — deliberately kept out of `lib/strip_audit_fields.py`'s local-audit strip set so it survives to the wire — and `lib/test-ship-helpers.sh` gains a regression asserting exactly that.
+- **`validate_batch.py` guardrails.** Added a fatal `(f) length_limit` check that flags a goal/task `title` or a `security_considerations` element exceeding 255 Unicode code points (counted by code point, matching the Stride `varchar(255)` changeset guard; unbounded JSONB fields are exempt), plus an advisory, non-fatal scored-field completeness pass that warns (stdout, exit 0) for any task missing or leaving empty one of the five scored fields. Covered in `lib/test-validate-batch.sh` and `lib/test-validate-batch.ps1`, and documented in the stridify Step 8a validator table.
+
+### Changed
+
+- **Core round-loop protocol ported to the Copilot selection primitive (`skills/stride-ideation/SKILL.md`).** The remaining live `AskUserQuestion` references in the questioning-loop, Round-4 premortem, Round-5, and per-round-budget sections now name the Copilot CLI question/selection primitive, and the preview-content guidance is expressed in the selection primitive's terms. Round order, the seven gated sections, and the one-to-four / ≤ 4 per-round question budget are preserved verbatim; the "NOT Claude Code's `AskUserQuestion`" disclaimers are intact.
+- **Calibration fixtures refreshed (`fixtures/*-stride-batch.json` + `fixtures/README.md`).** Every task across all three batch fixtures now carries all five scored fields with topic-appropriate content, so the calibration reference models complete, well-scoring decomposer output. Additions only — no task reordering and `source_spec_sha256` values are preserved.
+- **Documentation cleanup.** Corrected stale references to the removed `/stride-ideation:decompose` / `/stride-ideation:ship` slash commands and the nonexistent `commands/` path in the lib docstrings, test-script comments, and the notifications fixture, and clarified `lib/drift_check.py`'s role as fixture-integrity verification (the merged pipeline no longer runs drift detection). The smoke suite remains **14/14**.
+
 ## [0.3.0] - 2026-06-26
 
 Ports the upstream [`cheezy/stride-ideation`](https://github.com/cheezy/stride-ideation) **challenge gate** to GitHub Copilot CLI — a design stress-test that runs after the round-4 premortem (and the lean-startup round-5 MVP-design batch) and before the advisory reviewer pass. Additive and profile-independent; it never blocks the write.

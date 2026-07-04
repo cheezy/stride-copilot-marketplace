@@ -12,9 +12,17 @@ Exit codes:
     2  source_spec stamped but the referenced file can't be read or hashed
        (stderr contains the underlying error)
 
-The helper does NOT prompt the user — that is the slash-command body's
-concern. The helper's job is purely detection: report drift or no drift
-via exit code, and surface a precise diagnostic on stderr.
+The stride-ideation-stridify pipeline no longer calls this helper: the
+merged skill deliberately omits the source_spec drift check (see
+skills/stride-ideation-stridify/SKILL.md Step 8d "Drift check omitted" and
+its "What this skill does NOT do" list), because the batch JSON is written
+and shipped in a single invocation, so source drift cannot occur mid-pipeline.
+Its current role is fixture-integrity verification: Stage 2 of
+lib/run_smoke_test.sh (and the lib/test-drift-check.sh / .ps1 unit suites)
+exercise it to prove each committed fixture pair's stamped
+source_spec_sha256 still matches its requirements doc. The helper's job is
+purely detection: report drift or no drift via exit code, and surface a
+precise diagnostic on stderr.
 
 Behavior contract:
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # stride-ideation filename helpers.
 #
-# Two pure functions used by /stride-ideation:ideate and
-# /stride-ideation:decompose to compute unique artifact paths:
+# Two pure functions used by the stride-ideation-ideate and
+# stride-ideation-stridify skills to compute unique artifact paths:
 #
 #   sti_slugify "Add Notifications!"            -> "add-notifications"
 #   sti_unique_path <dir> <ts> <slug> <artifact> <ext>

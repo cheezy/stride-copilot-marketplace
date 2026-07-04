@@ -63,7 +63,7 @@ The default `lean` profile is the safe choice when nothing else applies. The pro
 
 ## The questioning loop
 
-A **round** is one batched `AskUserQuestion` invocation, containing one to four related questions. Rounds proceed until each of the seven required sections has draft content; a typical session uses three to five rounds.
+A **round** is one batched question set — a single invocation of the Copilot CLI platform's question/selection UI (NOT Claude Code's `AskUserQuestion`) — containing one to four related questions. Rounds proceed until each of the seven required sections has draft content; a typical session uses three to five rounds.
 
 | Round | Default focus (all profiles) | Profile-specific augmentations |
 |---|---|---|
@@ -77,7 +77,7 @@ A **round** is one batched `AskUserQuestion` invocation, containing one to four 
 
 The default-focus column is identical across all four profiles — only the augmentation column and Round-5 attendance change. `profile=lean` runs the table with the augmentation column empty and Round 5 skipped (byte-for-byte v0.3.0). `profile=product` adds the Round-1 JTBD batch and skips Round 5. `profile=discovery` adds the Round-2 Why-now + Alternative-options batch and skips Round 5. `profile=lean-startup` runs the Round-5 MVP-design batch (mandatory under this profile; skipped under any other profile). Round 3 (framing), Round 4 (premortem), and the challenge gate are profile-independent and mandatory in all profiles.
 
-Each batched question MUST use `preview` content when the option set benefits from visual comparison (e.g., proposed scope boundaries, alternative success-metric framings). Plain-text choices use `preview: null` or omit the field.
+Each batched question MUST surface comparison detail through the Copilot CLI selection primitive's per-option preview/description affordance when the option set benefits from visual comparison (e.g., proposed scope boundaries, alternative success-metric framings). Plain-text choices that need no comparison omit the extra per-option detail.
 
 Every gated-section question and every profile-specific forcing question (JTBD, Why-now, MVP design) MUST also carry the uncertainty-path option described in **Uncertainty path** below, so a stuck user always has a supported way to ask for help instead of bailing or entering a low-quality answer.
 
@@ -163,7 +163,7 @@ If the user reframes, restart the section that changed and re-batch the follow-o
 
 ## Round-4 premortem
 
-**Mandatory.** After the round-3 framing is locked in, the skill runs a premortem round before the reviewer pass. The premortem exists because the round-1-to-3 loop tends to surface expected design properties ("the mailer works", "users have email") rather than the failure modes the design actually depends on not happening. Round 4 is a single batched `AskUserQuestion` that forces the user to invert the framing.
+**Mandatory.** After the round-3 framing is locked in, the skill runs a premortem round before the reviewer pass. The premortem exists because the round-1-to-3 loop tends to surface expected design properties ("the mailer works", "users have email") rather than the failure modes the design actually depends on not happening. Round 4 is a single batched question set (one invocation of the Copilot CLI question/selection UI) that forces the user to invert the framing.
 
 Example phrasing:
 
@@ -177,7 +177,7 @@ The user's answer (and any follow-up clarification) is folded into the Assumptio
 
 ## Round 5: MVP design (lean-startup profile only)
 
-**Mandatory when `profile=lean-startup`; skipped under any other profile.** After Round 4 has folded premortem failure modes into the Assumptions section and the `(R)` marker is on the riskiest entry, Round 5 runs as a single batched `AskUserQuestion` (≤ 4 questions) that designs the smallest experiment capable of validating or falsifying the `(R)`-marked assumption — a Build-Measure-Learn frame applied to the riskiest assumption rather than to the project as a whole.
+**Mandatory when `profile=lean-startup`; skipped under any other profile.** After Round 4 has folded premortem failure modes into the Assumptions section and the `(R)` marker is on the riskiest entry, Round 5 runs as a single batched question set (one Copilot CLI question/selection invocation, ≤ 4 questions) that designs the smallest experiment capable of validating or falsifying the `(R)`-marked assumption — a Build-Measure-Learn frame applied to the riskiest assumption rather than to the project as a whole.
 
 The Round 5 prompt MUST explicitly lift the `(R)`-marked entry from the Assumptions section as the anchor, quoting it verbatim so the user sees exactly which assumption is being probed. Example phrasing:
 
@@ -192,7 +192,7 @@ The four questions in the batch (one batch, ≤ 4 questions, hard upper bound):
 
 If no Assumptions entry is marked `(R)` (e.g., the user produced a list under `--continue` from a pre-G104 doc that lacked the marker), fall back to lifting the **topmost** Assumptions entry as the anchor and note inline in the prompt that the marker was absent — do NOT abort Round 5, and do NOT silently pick a different entry without surfacing the gap. The user can mark a riskiest entry on a later refinement.
 
-The user's answers are folded into the optional **MVP / Validation experiment** section (see "Optional auxiliary sections" below), which is unlocked exclusively under `profile=lean-startup`. The four-question batch limit is the same `AskUserQuestion` ≤ 4 constraint that governs every other round — do NOT extend.
+The user's answers are folded into the optional **MVP / Validation experiment** section (see "Optional auxiliary sections" below), which is unlocked exclusively under `profile=lean-startup`. The four-question batch limit is the same ≤ 4 constraint on a single batched Copilot CLI question set that governs every other round — do NOT extend.
 
 **This round runs even on `--continue` mode** when `profile=lean-startup`. A prior requirements doc refined under `--continue --profile=lean-startup` may lack an MVP section entirely; the gap-fill use case is exactly when Round 5 catches it. Do NOT add a "skip on --continue" carve-out.
 

@@ -19,14 +19,399 @@
         "Do not predetermine the recommendation before the data is in"
       ],
       "tasks": [
-        {"title": "Capture slowest-20 tests baseline", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Run `mix test --trace --slowest 20` (or the framework equivalent) and commit the output as a baseline fixture. Includes wall-clock per test, file path, and tag.", "acceptance_criteria": "Output committed at fixtures/test-suite-baseline-slowest-20.txt\nRe-running on the same suite produces equivalent results (within 5%)", "dependencies": [], "key_files": [{"file_path": "fixtures/test-suite-baseline-slowest-20.txt", "note": "Baseline output", "position": 0}], "verification_steps": [{"step_type": "command", "step_text": "mix test --trace --slowest 20 > /tmp/baseline.txt 2>&1 && diff -q /tmp/baseline.txt fixtures/test-suite-baseline-slowest-20.txt", "expected_result": "no diff", "position": 0}]},
-        {"title": "Capture mock-to-integration ratio per module", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Walk test/ directory; per module, count tests using Mox/stubs vs tests using Repo.checkout/Bypass. Commit the table as a baseline fixture.", "acceptance_criteria": "Table committed at fixtures/test-suite-baseline-mock-ratio.md\nIncludes one row per top-level module in test/", "dependencies": [], "key_files": [{"file_path": "fixtures/test-suite-baseline-mock-ratio.md", "note": "Baseline table", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Spot-check 3 modules in the table against actual test files", "expected_result": "Counts match", "position": 0}]},
-        {"title": "Capture flake rate over the last 14 CI days", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Scrape recent CI runs (or a representative log archive) and tally tests that flipped pass/fail without code changes. Commit per-test flake count.", "acceptance_criteria": "fixtures/test-suite-baseline-flakes-14d.csv committed\nAggregate flake-rate percentage stated", "dependencies": [], "key_files": [{"file_path": "fixtures/test-suite-baseline-flakes-14d.csv", "note": "Flake counts", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Cross-reference CSV against a sample CI log", "expected_result": "Counts match", "position": 0}]},
-        {"title": "Build the pain inventory with concrete examples", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Walk through 5-10 specific moments where the current architecture slowed a contributor down — with file paths, PR links, or commit refs as evidence.", "acceptance_criteria": "docs/decisions/test-suite-pain-inventory.md committed\nEach item has at least one concrete reference (PR / commit / file)", "dependencies": [], "key_files": [{"file_path": "docs/decisions/test-suite-pain-inventory.md", "note": "Pain inventory", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Review committed file for concrete references", "expected_result": "References present", "position": 0}]},
-        {"title": "Evaluate path A: status quo + tighten slow tests", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Score Path A against the measurement data. Estimate effort to bring the slowest-20 tests under target.", "acceptance_criteria": "docs/decisions/test-suite-path-a.md committed\nEffort estimate provided", "dependencies": [0, 1, 2, 3], "key_files": [{"file_path": "docs/decisions/test-suite-path-a.md", "note": "Path A eval", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Review eval against the data fixtures", "expected_result": "Eval is data-grounded", "position": 0}]},
-        {"title": "Evaluate path B: convention overhaul without replacement", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Score Path B (mandate Bypass for HTTP, Repo.checkout for DB, kill mox stubs) against the measurement data.", "acceptance_criteria": "docs/decisions/test-suite-path-b.md committed", "dependencies": [0, 1, 2, 3], "key_files": [{"file_path": "docs/decisions/test-suite-path-b.md", "note": "Path B eval", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Review eval against the data fixtures", "expected_result": "Eval is data-grounded", "position": 0}]},
-        {"title": "Evaluate path C: parallel replacement under test_v2", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Score Path C (start a parallel test architecture; migrate module by module) against the measurement data.", "acceptance_criteria": "docs/decisions/test-suite-path-c.md committed", "dependencies": [0, 1, 2, 3], "key_files": [{"file_path": "docs/decisions/test-suite-path-c.md", "note": "Path C eval", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Review eval against the data fixtures", "expected_result": "Eval is data-grounded", "position": 0}]},
-        {"title": "Write the recommendation and first-vertical-slice spec", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Pick one of A/B/C with rationale; name the first vertical slice (specific module to migrate / specific tests to tighten / specific convention to mandate) that G2 will execute.", "acceptance_criteria": "docs/decisions/test-suite-recommendation.md committed\nFirst vertical slice is specific enough that G2 can scope tasks without re-derivation", "dependencies": [4, 5, 6], "key_files": [{"file_path": "docs/decisions/test-suite-recommendation.md", "note": "Final recommendation + first slice", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Confirm the recommendation names the first vertical slice precisely", "expected_result": "First slice is unambiguous", "position": 0}]}
+        {
+          "title": "Capture slowest-20 tests baseline",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Run `mix test --trace --slowest 20` (or the framework equivalent) and commit the output as a baseline fixture. Includes wall-clock per test, file path, and tag.",
+          "acceptance_criteria": "Output committed at fixtures/test-suite-baseline-slowest-20.txt\nRe-running on the same suite produces equivalent results (within 5%)",
+          "dependencies": [],
+          "key_files": [
+            {
+              "file_path": "fixtures/test-suite-baseline-slowest-20.txt",
+              "note": "Baseline output",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "command",
+              "step_text": "mix test --trace --slowest 20 > /tmp/baseline.txt 2>&1 && diff -q /tmp/baseline.txt fixtures/test-suite-baseline-slowest-20.txt",
+              "expected_result": "no diff",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Run `mix test --trace --slowest 20` twice on a quiescent machine and confirm the top-20 ordering is stable within 5% wall-clock",
+              "Diff the committed fixtures/test-suite-baseline-slowest-20.txt against a fresh run exactly as the verification step's `diff -q` does"
+            ],
+            "edge_cases": [
+              "Cold-compile time of the first run inflating a test's apparent duration — discard a warm-up run before capturing",
+              "Background load on the dev laptop skewing the ranking between runs",
+              "Tests tagged :skip or excluded by default never appearing in the trace"
+            ],
+            "coverage_target": "N/A — baseline capture, not code under test"
+          },
+          "security_considerations": [
+            "Measurement task — captures test names, file paths, and timings only; no auth, user input, or data-access surface",
+            "Do not commit any credentials or tokens a --trace run might echo from test setup logs into the baseline fixture"
+          ],
+          "patterns_to_follow": "Use `mix test --trace --slowest 20` as the canonical command from the verification_steps\nRedirect combined stdout+stderr to the fixture exactly as the verification diff expects (`> file 2>&1`)\nStore the raw tool output verbatim — do not hand-edit the rankings",
+          "pitfalls": [
+            "Don't run the trace under parallel CI load — noise makes the top-20 unreproducible",
+            "Don't strip the file-path/tag columns — later path evaluations need to tell a legitimate integration test from avoidable mock-heavy setup",
+            "Don't count the first cold run's compile time as test time"
+          ]
+        },
+        {
+          "title": "Capture mock-to-integration ratio per module",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Walk test/ directory; per module, count tests using Mox/stubs vs tests using Repo.checkout/Bypass. Commit the table as a baseline fixture.",
+          "acceptance_criteria": "Table committed at fixtures/test-suite-baseline-mock-ratio.md\nIncludes one row per top-level module in test/",
+          "dependencies": [],
+          "key_files": [
+            {
+              "file_path": "fixtures/test-suite-baseline-mock-ratio.md",
+              "note": "Baseline table",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Spot-check 3 modules in the table against actual test files",
+              "expected_result": "Counts match",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Spot-check 3 modules in fixtures/test-suite-baseline-mock-ratio.md against the actual test files per the verification step",
+              "Grep each module's test dir for Mox/stub usage vs Repo.checkout/Bypass and confirm the tallied counts match"
+            ],
+            "edge_cases": [
+              "A test that uses BOTH a Mox stub and Repo.checkout — apply one documented tie-break rule uniformly",
+              "Support/helper files that define stubs but assert nothing — exclude from the count",
+              "Modules with zero tests still needing a row or an explicit omission note"
+            ],
+            "coverage_target": "N/A — measurement fixture"
+          },
+          "security_considerations": [
+            "Analysis task — walks test/ and tallies pattern usage; no runtime execution, auth, or user-input surface",
+            "Ensure the committed table contains no environment-specific secrets pasted from test setup"
+          ],
+          "patterns_to_follow": "Classify by concrete markers: Mox/`stub`/`expect` -> mock; `Repo.checkout`/`Ecto.Adapters.SQL.Sandbox`/`Bypass` -> integration\nEmit one row per top-level module in test/ as the acceptance criteria requires\nRecord the classification rule at the top of the table so the ratio is reproducible",
+          "pitfalls": [
+            "Don't conflate `async: true` with 'mock-based' — async DB tests use the sandbox, not mocks",
+            "Don't double-count a test that touches multiple boundaries; pick one rule and apply it uniformly",
+            "Don't leave the tie-break rule undocumented — the ratio is meaningless without it"
+          ]
+        },
+        {
+          "title": "Capture flake rate over the last 14 CI days",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Scrape recent CI runs (or a representative log archive) and tally tests that flipped pass/fail without code changes. Commit per-test flake count.",
+          "acceptance_criteria": "fixtures/test-suite-baseline-flakes-14d.csv committed\nAggregate flake-rate percentage stated",
+          "dependencies": [],
+          "key_files": [
+            {
+              "file_path": "fixtures/test-suite-baseline-flakes-14d.csv",
+              "note": "Flake counts",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Cross-reference CSV against a sample CI log",
+              "expected_result": "Counts match",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Cross-reference fixtures/test-suite-baseline-flakes-14d.csv against a sample CI log per the verification step",
+              "Recompute the aggregate flake-rate percentage from the per-test counts and confirm it matches the stated figure"
+            ],
+            "edge_cases": [
+              "CI history shorter than 14 days — state the actual window covered instead of silently truncating",
+              "Tests quarantined or marked flaky mid-window disappearing from later runs",
+              "A pass/fail flip caused by a real code change miscounted as a flake — only count flips with no intervening source change",
+              "A bimodal distribution where a few tests flake constantly and the rest never do"
+            ],
+            "coverage_target": "N/A — measurement fixture"
+          },
+          "security_considerations": [
+            "Reads CI run metadata and logs only; no auth or data-access surface in the app",
+            "CI logs can contain secrets/tokens — scrub any leaked values before committing the CSV or quoting log excerpts"
+          ],
+          "patterns_to_follow": "Count a flake only as a pass<->fail flip with no intervening source change on the same test\nState the aggregate flake-rate percentage alongside the per-test CSV, as the acceptance criteria requires\nRecord the exact CI window (start/end dates, run count) so the rate is reproducible",
+          "pitfalls": [
+            "Don't average away a bimodal distribution — report the shape, not just one mean percentage",
+            "Don't count skipped or quarantined tests as passing",
+            "Don't attribute a legitimate code-change failure to flakiness",
+            "Don't assume a full 14 days exists — note it if the archive is shorter"
+          ]
+        },
+        {
+          "title": "Build the pain inventory with concrete examples",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Walk through 5-10 specific moments where the current architecture slowed a contributor down — with file paths, PR links, or commit refs as evidence.",
+          "acceptance_criteria": "docs/decisions/test-suite-pain-inventory.md committed\nEach item has at least one concrete reference (PR / commit / file)",
+          "dependencies": [],
+          "key_files": [
+            {
+              "file_path": "docs/decisions/test-suite-pain-inventory.md",
+              "note": "Pain inventory",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Review committed file for concrete references",
+              "expected_result": "References present",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Review docs/decisions/test-suite-pain-inventory.md and confirm each of the 5-10 items carries at least one concrete PR/commit/file reference per the verification step",
+              "Follow two of the referenced PR/commit links and confirm they actually demonstrate the described slowdown"
+            ],
+            "edge_cases": [
+              "An anecdote with no traceable reference — find evidence or drop it rather than list a generic complaint",
+              "A pain point that is really about Wallaby/browser tests, which the requirements scope out",
+              "Duplicate anecdotes describing the same underlying root cause"
+            ],
+            "coverage_target": "N/A — narrative artifact"
+          },
+          "security_considerations": [
+            "Documentation task — no code or data-access surface",
+            "Do not paste internal credentials, private URLs, or contributor PII into the committed inventory when citing PRs/commits"
+          ],
+          "patterns_to_follow": "Every item cites at least one concrete PR link, commit ref, or file path — no generic complaints (acceptance criteria)\nGround each anecdote in the measurement fixtures where possible (slowest-20, mock ratio, flake CSV)\nKeep browser/Wallaby pain out — the requirements scope it separately",
+          "pitfalls": [
+            "Don't list vibes-based complaints without a traceable reference",
+            "Don't smuggle in Wallaby/browser-layer pain — it is explicitly out of scope",
+            "Don't inflate the count with duplicates of the same root cause"
+          ]
+        },
+        {
+          "title": "Evaluate path A: status quo + tighten slow tests",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Score Path A against the measurement data. Estimate effort to bring the slowest-20 tests under target.",
+          "acceptance_criteria": "docs/decisions/test-suite-path-a.md committed\nEffort estimate provided",
+          "dependencies": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "key_files": [
+            {
+              "file_path": "docs/decisions/test-suite-path-a.md",
+              "note": "Path A eval",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Review eval against the data fixtures",
+              "expected_result": "Eval is data-grounded",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Review docs/decisions/test-suite-path-a.md against the four data fixtures (slowest-20, mock ratio, flake CSV, pain inventory) and confirm every claim is data-grounded per the verification step",
+              "Sanity-check the effort estimate for bringing the slowest-20 under target against the actual per-test timings"
+            ],
+            "edge_cases": [
+              "A slow test that is legitimately integration-bound and cannot be tightened without losing coverage (constraint: no coverage loss)",
+              "The measurement showing the 45s wall-clock is not broadly bottlenecking — Path A becomes the default per the open questions",
+              "An effort estimate dominated by a single outlier test"
+            ],
+            "coverage_target": "N/A — decision analysis"
+          },
+          "security_considerations": [
+            "Analysis/decision task — reads committed measurement fixtures only; no auth, user-input, or data-access surface"
+          ],
+          "patterns_to_follow": "Score Path A against the SAME rubric used for B and C so the three evaluations are comparable (goal acceptance criteria)\nGround every claim in the committed data fixtures rather than intuition\nSeparate legitimately-slow integration tests from avoidable mock-heavy setup when estimating effort",
+          "pitfalls": [
+            "Don't predetermine the outcome — let the slowest-20 and flake data drive the score",
+            "Don't propose deleting tests to hit the target; the constraint forbids coverage loss",
+            "Don't use a different rubric than paths B and C"
+          ]
+        },
+        {
+          "title": "Evaluate path B: convention overhaul without replacement",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Score Path B (mandate Bypass for HTTP, Repo.checkout for DB, kill mox stubs) against the measurement data.",
+          "acceptance_criteria": "docs/decisions/test-suite-path-b.md committed",
+          "dependencies": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "key_files": [
+            {
+              "file_path": "docs/decisions/test-suite-path-b.md",
+              "note": "Path B eval",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Review eval against the data fixtures",
+              "expected_result": "Eval is data-grounded",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Review docs/decisions/test-suite-path-b.md against fixtures/test-suite-baseline-mock-ratio.md and confirm the convention-overhaul effort is grounded in the per-module counts",
+              "Confirm the eval uses the same rubric as paths A and C"
+            ],
+            "edge_cases": [
+              "Modules where killing Mox stubs would force a real external dependency with no Bypass seam",
+              "A staged rollout that can't be enforced without a lint/CI gate",
+              "Modules already following the target convention (zero migration cost) vs. the worst offenders"
+            ],
+            "coverage_target": "N/A — decision analysis"
+          },
+          "security_considerations": [
+            "Analysis/decision task — reads committed measurement fixtures only; no auth or data-access surface"
+          ],
+          "patterns_to_follow": "Anchor the effort estimate in the per-module mock-vs-integration counts from fixtures/test-suite-baseline-mock-ratio.md\nScore against the shared rubric used for A and C\nStage the convention change (Bypass for HTTP, Repo.checkout for DB) rather than a big-bang flag day, per the constraints",
+          "pitfalls": [
+            "Don't assume every Mox stub has a clean Bypass/Repo.checkout replacement — flag the ones that don't",
+            "Don't propose a big-bang cutover; the constraints require incremental shippability",
+            "Don't diverge from the A/C rubric"
+          ]
+        },
+        {
+          "title": "Evaluate path C: parallel replacement under test_v2",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Score Path C (start a parallel test architecture; migrate module by module) against the measurement data.",
+          "acceptance_criteria": "docs/decisions/test-suite-path-c.md committed",
+          "dependencies": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "key_files": [
+            {
+              "file_path": "docs/decisions/test-suite-path-c.md",
+              "note": "Path C eval",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Review eval against the data fixtures",
+              "expected_result": "Eval is data-grounded",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Review docs/decisions/test-suite-path-c.md against the data fixtures and confirm the module-by-module migration estimate is grounded",
+              "Confirm the eval respects the 'no permanent duplicate suite in CI' constraint and uses the shared rubric"
+            ],
+            "edge_cases": [
+              "The migration window overrunning and leaving two suites in CI permanently (constraint violation)",
+              "A module whose coverage cannot be re-asserted in the new layer without gaps (constraint: every replaced test needs an equivalent assertion)",
+              "test_v2/ and test/ both collected by `mix test`, doubling runtime during the window"
+            ],
+            "coverage_target": "N/A — decision analysis"
+          },
+          "security_considerations": [
+            "Analysis/decision task — reads committed measurement fixtures only; no auth or data-access surface"
+          ],
+          "patterns_to_follow": "Score against the shared rubric used for A and B\nRespect the constraints: no permanent dual-suite in CI, every replaced test keeps an equivalent assertion, `mix test`/`mix test --cover` entry points stay intact\nOrder the module-by-module migration using the mock-ratio fixture so the highest-pain modules go first",
+          "pitfalls": [
+            "Don't propose a parallel suite that runs indefinitely — the constraint caps duplication to the migration window",
+            "Don't allow coverage to drop during migration — each moved test needs an equivalent assertion",
+            "Don't break the existing `mix test` entry point by adding test_v2/ to the default run without a plan"
+          ]
+        },
+        {
+          "title": "Write the recommendation and first-vertical-slice spec",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Pick one of A/B/C with rationale; name the first vertical slice (specific module to migrate / specific tests to tighten / specific convention to mandate) that G2 will execute.",
+          "acceptance_criteria": "docs/decisions/test-suite-recommendation.md committed\nFirst vertical slice is specific enough that G2 can scope tasks without re-derivation",
+          "dependencies": [
+            4,
+            5,
+            6
+          ],
+          "key_files": [
+            {
+              "file_path": "docs/decisions/test-suite-recommendation.md",
+              "note": "Final recommendation + first slice",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Confirm the recommendation names the first vertical slice precisely",
+              "expected_result": "First slice is unambiguous",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Confirm docs/decisions/test-suite-recommendation.md names exactly one of A/B/C with rationale and specifies the first vertical slice precisely per the verification step",
+              "Hand the first-slice spec to a fresh reader and confirm they can scope G2's tasks without re-deriving anything"
+            ],
+            "edge_cases": [
+              "The data supporting no change — the recommendation defaults to Path A per the open questions",
+              "A first slice too large to ship in one sprint (success metric requires roughly one sprint / ~30 tests)",
+              "Two paths scoring nearly equally — record the tie-break rationale"
+            ],
+            "coverage_target": "N/A — decision document"
+          },
+          "security_considerations": [
+            "Decision-writing task — synthesizes committed fixtures and path evals; no code or data-access surface"
+          ],
+          "patterns_to_follow": "Follow the decision-document section order from the requirements Sketch: baseline -> pain -> three paths -> recommendation -> first slice\nName ONE path with a one-paragraph rationale (requirements Sketch section 4)\nSpecify the first vertical slice concretely enough that G2 scopes tasks without re-derivation (goal acceptance criteria)",
+          "pitfalls": [
+            "Don't leave the first slice vague — G2 is blocked on it and cannot re-derive scope",
+            "Don't recommend a slice larger than one sprint / ~30 tests",
+            "Don't contradict the path evaluations; the recommendation must follow from the scored rubric"
+          ]
+        }
       ]
     },
     {
@@ -45,12 +430,297 @@
         "Do not break the existing `mix test` and `mix test --cover` entry points"
       ],
       "tasks": [
-        {"title": "Re-read the recommendation and confirm the first-vertical-slice scope", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Open docs/decisions/test-suite-recommendation.md, identify the named first slice, and confirm the scope is still applicable (no relevant test changes since G1 landed).", "acceptance_criteria": "Notes added to the recommendation doc confirming the slice scope or flagging the need for a recommendation refresh", "dependencies": [], "key_files": [{"file_path": "docs/decisions/test-suite-recommendation.md", "note": "Add slice-confirmation note", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Read the slice description against current test/ contents", "expected_result": "Scope is still applicable", "position": 0}]},
-        {"title": "Implement the first slice — primary code change", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Make the changes called for by the first vertical slice. Exact files depend on the recommendation; the test description there is your scope.", "acceptance_criteria": "Code change as specified is in place\nUnit tests pass after the change", "dependencies": [0], "key_files": [{"file_path": "test/", "note": "Slice-dependent", "position": 0}], "verification_steps": [{"step_type": "command", "step_text": "mix test", "expected_result": "Tests pass", "position": 0}]},
-        {"title": "Capture before/after measurement against the slice's target metric", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Run the same measurement procedure G1 ran for the affected module; commit the after-figure.", "acceptance_criteria": "fixtures/test-suite-slice-after.md committed with before/after table", "dependencies": [1], "key_files": [{"file_path": "fixtures/test-suite-slice-after.md", "note": "Measurement", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Confirm before/after delta matches the recommendation's predicted delta", "expected_result": "Delta matches or beats prediction", "position": 0}]},
-        {"title": "Confirm no regression in pass rate on the existing suite", "type": "work", "complexity": "small", "priority": "high", "needs_review": false, "description": "Run `mix test --cover` end-to-end; verify pass rate and coverage match baseline.", "acceptance_criteria": "mix test --cover passes\nCoverage unchanged or improved relative to baseline", "dependencies": [1], "key_files": [], "verification_steps": [{"step_type": "command", "step_text": "mix test --cover", "expected_result": "All tests pass; coverage at/above baseline", "position": 0}]},
-        {"title": "Update CONTRIBUTING / AGENTS notes to reflect the new convention", "type": "work", "complexity": "small", "priority": "medium", "needs_review": false, "description": "Adjust the project's contributor docs so the next contributor knows about the new pattern or layering established by the slice.", "acceptance_criteria": "AGENTS.md or CONTRIBUTING.md updated\nThe new convention is named explicitly", "dependencies": [3], "key_files": [{"file_path": "AGENTS.md", "note": "Note new convention", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Re-read updated section for clarity", "expected_result": "Clear and concrete", "position": 0}]},
-        {"title": "Define follow-up slices and update the recommendation doc", "type": "work", "complexity": "small", "priority": "medium", "needs_review": false, "description": "Based on what worked and what surprised in the first slice, define the next 2-3 vertical slices in the recommendation doc.", "acceptance_criteria": "docs/decisions/test-suite-recommendation.md gets a 'Follow-up slices' section\nEach next-slice item is specific enough to become a Stride task", "dependencies": [2, 3], "key_files": [{"file_path": "docs/decisions/test-suite-recommendation.md", "note": "Follow-up slices", "position": 0}], "verification_steps": [{"step_type": "manual", "step_text": "Confirm each next slice can be scoped without further discussion", "expected_result": "Slices are concrete", "position": 0}]}
+        {
+          "title": "Re-read the recommendation and confirm the first-vertical-slice scope",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Open docs/decisions/test-suite-recommendation.md, identify the named first slice, and confirm the scope is still applicable (no relevant test changes since G1 landed).",
+          "acceptance_criteria": "Notes added to the recommendation doc confirming the slice scope or flagging the need for a recommendation refresh",
+          "dependencies": [],
+          "key_files": [
+            {
+              "file_path": "docs/decisions/test-suite-recommendation.md",
+              "note": "Add slice-confirmation note",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Read the slice description against current test/ contents",
+              "expected_result": "Scope is still applicable",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Read the first-slice description in docs/decisions/test-suite-recommendation.md against current test/ contents and confirm the scope is still applicable per the verification step",
+              "Check git log on the targeted test files since G1 landed for changes that would invalidate the slice"
+            ],
+            "edge_cases": [
+              "Test files in the slice's scope changed since G1 landed — flag for a recommendation refresh rather than proceeding",
+              "The named module having been split or renamed since the decision",
+              "The recommendation defaulting to Path A (tighten in place) with no distinct module to confirm"
+            ],
+            "coverage_target": "N/A — scope-confirmation task"
+          },
+          "security_considerations": [
+            "Read/annotation task — reads the decision doc and test/ tree; no auth or data-access surface"
+          ],
+          "patterns_to_follow": "Add a dated slice-confirmation note to the recommendation doc rather than editing the original decision prose\nCompare the slice scope against current test/ state, not the state at G1 authoring time\nFlag-and-stop if scope drifted rather than silently re-scoping",
+          "pitfalls": [
+            "Don't start implementation before confirming the slice still applies",
+            "Don't silently rewrite the recommendation's scope — flag a refresh if test/ drifted",
+            "Don't overwrite the original decision rationale; append a confirmation note"
+          ]
+        },
+        {
+          "title": "Implement the first slice — primary code change",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Make the changes called for by the first vertical slice. Exact files depend on the recommendation; the test description there is your scope.",
+          "acceptance_criteria": "Code change as specified is in place\nUnit tests pass after the change",
+          "dependencies": [
+            0
+          ],
+          "key_files": [
+            {
+              "file_path": "test/",
+              "note": "Slice-dependent",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "command",
+              "step_text": "mix test",
+              "expected_result": "Tests pass",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "unit_tests": [
+              "Run the affected module's tests with `mix test <slice test path>` and confirm they pass after the change",
+              "For any test moved off a Mox stub onto Repo.checkout/Bypass, add an equivalent behavioural assertion so coverage does not drop (constraint: no coverage loss)"
+            ],
+            "integration_tests": [
+              "If the slice replaces a mock boundary with a real one, exercise the module end-to-end through the new Bypass/Repo.checkout seam"
+            ],
+            "manual_tests": [
+              "Run the full `mix test` per the verification step and confirm no unrelated breakage"
+            ],
+            "edge_cases": [
+              "A test that asserted on mock interaction (verify/expect) with no behavioural equivalent in the new layer",
+              "async: true tests colliding under the new DB-state strategy",
+              "Shared setup helpers used by both migrated and un-migrated tests"
+            ],
+            "coverage_target": "No decrease versus the G1 baseline for the affected module"
+          },
+          "security_considerations": [
+            "Test-infrastructure change — modifies test setup/assertions, not production code paths; low security surface",
+            "If the slice introduces Bypass/HTTP seams, ensure no real credentials or live endpoints are hardcoded into the test setup"
+          ],
+          "patterns_to_follow": "The first-slice description in docs/decisions/test-suite-recommendation.md is the scope of record — implement exactly it\nMatch the target convention the recommendation mandates (e.g. Bypass for HTTP, Repo.checkout for DB)\nKeep the existing `mix test` entry point green throughout (constraint)",
+          "pitfalls": [
+            "Don't broaden beyond the first slice — follow-ups belong in a later task",
+            "Don't drop a mock-interaction assertion without an equivalent behavioural assertion (constraint: no coverage loss)",
+            "Don't break `mix test`/`mix test --cover` — they're wired into hooks and scripts"
+          ]
+        },
+        {
+          "title": "Capture before/after measurement against the slice's target metric",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Run the same measurement procedure G1 ran for the affected module; commit the after-figure.",
+          "acceptance_criteria": "fixtures/test-suite-slice-after.md committed with before/after table",
+          "dependencies": [
+            1
+          ],
+          "key_files": [
+            {
+              "file_path": "fixtures/test-suite-slice-after.md",
+              "note": "Measurement",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Confirm before/after delta matches the recommendation's predicted delta",
+              "expected_result": "Delta matches or beats prediction",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Re-run the same measurement procedure G1 used for the affected module (e.g. `mix test --trace` on the slice's tests) and record the after-figure",
+              "Confirm fixtures/test-suite-slice-after.md contains a before/after table and the delta matches or beats the recommendation's prediction per the verification step"
+            ],
+            "edge_cases": [
+              "Warm-vs-cold run skew — reuse the exact warm-up protocol G1 used so before/after stay comparable",
+              "A delta within measurement noise — state the noise band rather than claiming a win",
+              "The 'before' figure needing to come from the G1 baseline fixture, not a fresh re-run of old code"
+            ],
+            "coverage_target": "N/A — measurement fixture"
+          },
+          "security_considerations": [
+            "Measurement task — records timings/counts only; no auth or data-access surface",
+            "Do not let --trace setup logs leak secrets into the committed after-fixture"
+          ],
+          "patterns_to_follow": "Use the IDENTICAL measurement procedure and warm-up protocol from G1 so before/after are apples-to-apples\nPull the 'before' number from the committed G1 baseline fixture rather than re-deriving it\nCommit a before/after table to fixtures/test-suite-slice-after.md (acceptance criteria)",
+          "pitfalls": [
+            "Don't compare a cold 'after' run against a warm 'before' baseline",
+            "Don't claim a delta inside the noise band as a real improvement",
+            "Don't invent a 'before' number — cite the G1 baseline fixture"
+          ]
+        },
+        {
+          "title": "Confirm no regression in pass rate on the existing suite",
+          "type": "work",
+          "complexity": "small",
+          "priority": "high",
+          "needs_review": false,
+          "description": "Run `mix test --cover` end-to-end; verify pass rate and coverage match baseline.",
+          "acceptance_criteria": "mix test --cover passes\nCoverage unchanged or improved relative to baseline",
+          "dependencies": [
+            1
+          ],
+          "key_files": [],
+          "verification_steps": [
+            {
+              "step_type": "command",
+              "step_text": "mix test --cover",
+              "expected_result": "All tests pass; coverage at/above baseline",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "integration_tests": [
+              "Run `mix test --cover` end-to-end per the verification step and confirm all tests pass"
+            ],
+            "manual_tests": [
+              "Compare the reported pass count and coverage percentage against the G1 baseline and confirm unchanged-or-improved per the acceptance criteria"
+            ],
+            "edge_cases": [
+              "The coverage tool counting new/migrated tests differently, shifting the percentage without a real regression",
+              "A newly-flaky test surfacing intermittently — re-run to distinguish flake from regression",
+              "async ordering exposing a latent inter-test dependency introduced by the slice"
+            ],
+            "coverage_target": "At or above the G1 baseline coverage percentage"
+          },
+          "security_considerations": [
+            "Verification task — runs the existing suite; no auth or data-access surface"
+          ],
+          "patterns_to_follow": "Use `mix test --cover` — the entry point the constraints require to stay intact\nCompare against the committed G1 baseline, not a remembered number\nRe-run once before declaring a regression to rule out a flake (see the flake baseline)",
+          "pitfalls": [
+            "Don't accept a coverage drop as 'close enough' — the acceptance criteria require at/above baseline",
+            "Don't mistake a known flaky test for a slice-caused regression",
+            "Don't skip the full-suite run by only testing the changed module"
+          ]
+        },
+        {
+          "title": "Update CONTRIBUTING / AGENTS notes to reflect the new convention",
+          "type": "work",
+          "complexity": "small",
+          "priority": "medium",
+          "needs_review": false,
+          "description": "Adjust the project's contributor docs so the next contributor knows about the new pattern or layering established by the slice.",
+          "acceptance_criteria": "AGENTS.md or CONTRIBUTING.md updated\nThe new convention is named explicitly",
+          "dependencies": [
+            3
+          ],
+          "key_files": [
+            {
+              "file_path": "AGENTS.md",
+              "note": "Note new convention",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Re-read updated section for clarity",
+              "expected_result": "Clear and concrete",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Re-read the updated AGENTS.md/CONTRIBUTING.md section and confirm it names the new convention explicitly and clearly per the verification step",
+              "Confirm the section states which layer/boundary the pattern governs so the next contributor can apply it unprompted"
+            ],
+            "edge_cases": [
+              "The convention only applying to the migrated module so far — word the doc so it does not imply project-wide adoption",
+              "Conflicting existing testing guidance in AGENTS.md that must be reconciled, not duplicated"
+            ],
+            "coverage_target": "N/A — documentation task"
+          },
+          "security_considerations": [
+            "Documentation edit — no code or data-access surface",
+            "Do not commit tokens, internal URLs, or credentials into the contributor docs when giving examples"
+          ],
+          "patterns_to_follow": "Name the new convention explicitly (acceptance criteria) and state which boundary it governs (HTTP -> Bypass, DB -> Repo.checkout, etc.)\nMatch the existing AGENTS.md tone and section structure rather than bolting on a new format\nScope the wording to what the first slice actually established — mark the rest as forthcoming",
+          "pitfalls": [
+            "Don't overstate rollout — the convention currently covers one slice, not the whole suite",
+            "Don't duplicate or contradict existing testing guidance already in AGENTS.md",
+            "Don't paste secrets into example snippets"
+          ]
+        },
+        {
+          "title": "Define follow-up slices and update the recommendation doc",
+          "type": "work",
+          "complexity": "small",
+          "priority": "medium",
+          "needs_review": false,
+          "description": "Based on what worked and what surprised in the first slice, define the next 2-3 vertical slices in the recommendation doc.",
+          "acceptance_criteria": "docs/decisions/test-suite-recommendation.md gets a 'Follow-up slices' section\nEach next-slice item is specific enough to become a Stride task",
+          "dependencies": [
+            2,
+            3
+          ],
+          "key_files": [
+            {
+              "file_path": "docs/decisions/test-suite-recommendation.md",
+              "note": "Follow-up slices",
+              "position": 0
+            }
+          ],
+          "verification_steps": [
+            {
+              "step_type": "manual",
+              "step_text": "Confirm each next slice can be scoped without further discussion",
+              "expected_result": "Slices are concrete",
+              "position": 0
+            }
+          ],
+          "testing_strategy": {
+            "manual_tests": [
+              "Confirm docs/decisions/test-suite-recommendation.md gains a 'Follow-up slices' section and each next-slice item is specific enough to become a Stride task per the verification step",
+              "Hand each next-slice bullet to a fresh reader and confirm it can be scoped without further discussion"
+            ],
+            "edge_cases": [
+              "A first-slice surprise invalidating the assumed migration order — reorder rather than follow the stale plan",
+              "A follow-up slice that is really several slices — split it so each fits one sprint / ~30 tests",
+              "The first slice revealing the whole path was wrong — flag a recommendation revisit instead of listing follow-ups"
+            ],
+            "coverage_target": "N/A — planning artifact"
+          },
+          "security_considerations": [
+            "Planning/documentation task — appends to the decision doc; no code or data-access surface"
+          ],
+          "patterns_to_follow": "Ground the next 2-3 slices in what actually worked and surprised in the first slice (task description)\nSize each follow-up like the first slice: one sprint, ~30 tests, single module/boundary\nWrite each item concretely enough to become a Stride task without re-derivation (acceptance criteria)",
+          "pitfalls": [
+            "Don't list vague 'migrate everything else' items — each slice must be independently scopable",
+            "Don't ignore first-slice surprises when ordering follow-ups",
+            "Don't bundle multiple modules into one oversized slice"
+          ]
+        }
       ]
     }
   ]
