@@ -36,7 +36,7 @@
     {
       "name": "launchdarkly-copilot",
       "description": "Generate correct, testable, and removable LaunchDarkly feature-flag code from GitHub Copilot — Java server SDK plus the TypeScript SDKs (Node server, client-side JS, React) with scaffolding, flag-removal skills, and an anti-pattern review agent.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "source": "./plugins/launchdarkly-copilot"
     }
   ]
