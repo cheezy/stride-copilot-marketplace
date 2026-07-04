@@ -1,6 +1,6 @@
 ---
 name: launchdarkly-flag-removal
-description: Use when retiring a temporary LaunchDarkly flag that has served its purpose — collapse the code to the explicitly chosen winning variation. Inlines the winner, deletes the losing branch, removes branch-only (dead) tests while keeping behavior tests, deletes the flag-key constant and its import, and reports any flag usage it cannot safely collapse for human follow-up instead of guessing. Assumes the single-boundary structure from the launchdarkly-flag-structure skill. Given a flag key and the winning variation, make removal a mechanical, low-risk edit.
+description: Use when retiring a temporary LaunchDarkly flag that has served its purpose — collapse the code to the explicitly chosen winning variation. Inlines the winner, deletes the losing branch, removes branch-only (dead) tests while keeping behavior tests, deletes the flag-key constant and its import, and reports any flag usage it cannot safely collapse for human follow-up instead of guessing. Recognizes React hook call sites — a useBoolVariation/useFlags read behind a single custom hook is collapsible, a scattered hook read is reported, never auto-edited. Assumes the single-boundary structure from the launchdarkly-flag-structure skill. Given a flag key and the winning variation, make removal a mechanical, low-risk edit.
 ---
 
 # LaunchDarkly Flag Removal
@@ -36,16 +36,24 @@ implementations behind one interface) and can collapse it correctly.
 
 ### Step 3: Find every reference
 
-Find all references to the flag — both the **constant** and any **raw key
-string** and the **read boundary** (search the codebase for both `<FLAG_CONSTANT_NAME>`
-and the raw `<flag-key>`).
+Find all references to the flag — the **constant**, any **raw key string**, the
+server **read boundary**, and any **React hook call site** (search the codebase
+for `<FLAG_CONSTANT_NAME>`, the raw `<flag-key>`, and the flag's React reads:
+`useBoolVariation(...)` / `useFlags()` destructures of the camelCased key, e.g.
+`newCheckout` for `new-checkout`).
 
 Classify each hit:
-- **Single-boundary seam** (the `variation` read sits in one factory/resolver,
-  behind the constant) → safe to collapse automatically (Step 4).
-- **Anything else** — a `variation` call at a scattered call site, a raw
-  string-literal key, or a reference in config/docs → **non-conforming**; do not
-  edit it. Collect it for the Step 5 report.
+- **Single-boundary seam** → safe to collapse automatically (Step 4). This is
+  either a server `variation` read sitting in one factory/resolver behind the
+  constant, **or** a React flag read that is behind a **single custom hook**
+  (one `useBoolVariation`/`useFlags` read inside one `useX()` hook or resolver
+  that components consume — not `useBoolVariation` called directly in many
+  components).
+- **Anything else** — a `variation` call at a scattered server call site, a
+  **scattered React hook read** (`useBoolVariation`/`useFlags` called directly in
+  multiple components instead of behind the single hook), a raw string-literal
+  key, or a reference in config/docs → **non-conforming**; do **not** edit it.
+  Collect it for the Step 5 report.
 
 ### Step 4: Collapse conforming seams to the winner
 
@@ -62,6 +70,12 @@ For each single-boundary seam:
    parameterized both-states test down to the winning behavior rather than
    deleting it wholesale.
 
+For a **React single-boundary hook**, collapse it the same way: delete the losing
+component, replace the hook's `useBoolVariation`/`useFlags` read with the winning
+component directly (dropping the now-pointless custom hook if it did nothing
+else), delete the flag-key constant and its import, and reduce the both-states
+test to the winning render.
+
 The winner MUST be the explicitly supplied winning variation — which should also
 be the safe-default branch — so the collapse never silently changes behavior.
 
@@ -73,9 +87,10 @@ file:line and why, for human follow-up — for example:
 ```
 flag removal: collapsed 1 seam to the winning branch.
 Could NOT safely collapse (left untouched — please handle manually):
-  - src/legacy/Report.java:88  raw "new-checkout" string read, not behind the seam
-  - config/flags.yaml:12       flag referenced in config
-  - docs/checkout.md:40        flag referenced in documentation
+  - src/legacy/Report.java:88     raw "new-checkout" string read, not behind the seam
+  - src/components/Banner.tsx:14  scattered useBoolVariation('new-checkout') hook read, not behind the single hook
+  - config/flags.yaml:12          flag referenced in config
+  - docs/checkout.md:40           flag referenced in documentation
 ```
 
 Never silently edit a scattered read or a config/doc reference — surface it.
@@ -133,7 +148,8 @@ export function resolveCheckout(): Checkout {
 
 ## Pitfalls
 
-- **Don't silently edit non-single-boundary reads.** Scattered reads, raw string
+- **Don't silently edit non-single-boundary reads.** Scattered server `variation`
+  reads, **scattered React `useBoolVariation`/`useFlags` hook reads**, raw string
   keys, and config/doc references are reported for human follow-up, never
   auto-edited.
 - **Don't remove behavior tests.** Only delete tests that solely exercised the

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-04
+
+Modernize the client-side SDK guidance to the scoped v4 packages and add
+first-class browser and React scaffolding.
+
+### Changed
+
+- `launchdarkly-typescript-client` skill rewritten to teach the scoped v4
+  packages (`@launchdarkly/js-client-sdk`, `@launchdarkly/react-sdk`) as the
+  primary path — `createClient`/`client.start()`, the never-rejecting
+  `waitForInitialization` status object, no-context typed variations,
+  `createLDReactProvider`, and the typed hooks — with the unscoped v3 packages
+  demoted to a labeled legacy section.
+- `launchdarkly-java-sdk` TestData examples aligned on `booleanFlag()` and the
+  Maven/Gradle SDK version pin made drift-resistant.
+- `launchdarkly-reviewer` agent anti-pattern table expanded with the remaining
+  skill-declared never-dos (per-request client, evaluate-before-init, SSR
+  hydration, live-LD/real-key-in-tests, winner-differs-from-safe-default, and
+  full-context/PII logging), v4-aware client detection, and a skill-to-reviewer
+  parity note.
+- README refreshed to the v4 packages and to the `stride-copilot-marketplace`
+  vendored distribution; Supported SDKs, the skill index, the install path, and
+  the status version updated.
+
+### Added
+
+- `launchdarkly-flag-scaffolding` gained first-class `browser` and `react`
+  scaffold targets emitting the v4 client-side seam (client-side ID,
+  `createClient`/`createLDReactProvider`) with both-states tests.
+- `launchdarkly-flag-removal` Step 3 now classifies React hook call sites — a
+  read behind a single custom hook collapses; a scattered hook read is reported
+  for human follow-up, never auto-edited.
+- `scripts/validate.mjs` — a dependency-free Node validation smoke script
+  (version parity, skill/agent inventory, reference resolution, and a v3
+  package-era drift guard).
+
 ## [0.1.0]
 
 Initial release of the GitHub Copilot port of the LaunchDarkly plugin.

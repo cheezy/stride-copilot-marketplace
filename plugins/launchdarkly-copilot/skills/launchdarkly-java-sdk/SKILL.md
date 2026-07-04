@@ -23,17 +23,26 @@ skill assumes those concepts and focuses on the Java API.
 **Maven:**
 
 ```xml
+<!-- Track the latest 7.x from Maven Central rather than pinning a literal that
+     rots. Centralize the version in a property and update it from Maven Central:
+     https://central.sonatype.com/artifact/com.launchdarkly/launchdarkly-java-server-sdk -->
+<properties>
+  <launchdarkly.sdk.version>7.9.0</launchdarkly.sdk.version>
+</properties>
+
 <dependency>
   <groupId>com.launchdarkly</groupId>
   <artifactId>launchdarkly-java-server-sdk</artifactId>
-  <version>7.9.0</version> <!-- check for the latest 7.x release -->
+  <version>${launchdarkly.sdk.version}</version>
 </dependency>
 ```
 
 **Gradle:**
 
 ```groovy
-implementation "com.launchdarkly:launchdarkly-java-server-sdk:7.9.0"
+// Track the latest 7.x from Maven Central rather than pinning a literal that rots.
+def launchDarklySdkVersion = "7.9.0"
+implementation "com.launchdarkly:launchdarkly-java-server-sdk:${launchDarklySdkVersion}"
 ```
 
 Imports used throughout:
@@ -171,7 +180,7 @@ in-process, and **exercise both the flag-on and flag-off branches**.
 import com.launchdarkly.sdk.server.integrations.TestData;
 
 TestData td = TestData.dataSource();
-td.update(td.flag("new-checkout").variationForAll(true));   // flag ON for everyone
+td.update(td.flag("new-checkout").booleanFlag().variationForAll(true));   // flag ON for everyone
 
 LDConfig config = new LDConfig.Builder().dataSource(td).build();
 LDClient client = new LDClient("fake-key-for-tests", config);
@@ -182,7 +191,7 @@ LDContext context = LDContext.builder("test-user").build();
 assert client.boolVariation("new-checkout", context, false) == true;
 
 // flip to OFF and assert the other branch:
-td.update(td.flag("new-checkout").variationForAll(false));
+td.update(td.flag("new-checkout").booleanFlag().variationForAll(false));
 assert client.boolVariation("new-checkout", context, true) == false;
 ```
 
