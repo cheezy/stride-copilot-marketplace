@@ -30,7 +30,7 @@
     {
       "name": "stride-lite-copilot",
       "description": "Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt — no API calls, no kanban auth.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "source": "./plugins/stride-lite-copilot"
     },
     {

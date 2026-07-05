@@ -38,7 +38,10 @@ nope() {
 
 # --- Setup: scratch project dir with a working .stride_lite.md ---
 SCRATCH=$(mktemp -d)
-trap 'rm -rf "$SCRATCH"' EXIT
+# Separate scratch dir for the failing-command fixtures so they never perturb
+# the success-path .stride_lite.md above.
+FAIL_SCRATCH=$(mktemp -d)
+trap 'rm -rf "$SCRATCH" "$FAIL_SCRATCH"' EXIT
 
 cat > "$SCRATCH/.stride_lite.md" <<'EOF'
 ## before_task
@@ -60,10 +63,45 @@ echo "after_goal fired"
 ```
 EOF
 
+# A .stride_lite.md whose three sections each run a failing command — drives the
+# exit-code contract cases below. `false` (exit 1), NOT `exit 3`, is deliberate:
+# the executor evals each command in-process, so `exit N` would terminate the
+# hook before it could emit its failure JSON.
+cat > "$FAIL_SCRATCH/.stride_lite.md" <<'EOF'
+## before_task
+
+```bash
+false
+```
+
+## after_task
+
+```bash
+false
+```
+
+## after_goal
+
+```bash
+false
+```
+EOF
+
 run_hook() {
   local phase="$1"
   local stdin_json="$2"
   printf '%s' "$stdin_json" | CLAUDE_PROJECT_DIR="$SCRATCH" "$HOOK_SCRIPT" "$phase" 2>/dev/null
+}
+
+# Same as run_hook but against a caller-supplied project dir, so the failing-
+# command fixture drives the hook without touching the success-path scratch.
+# The pipeline is the function's last command, so `rc=$?` in the caller captures
+# the hook's real exit code (no masking subshell).
+run_hook_dir() {
+  local dir="$1"
+  local phase="$2"
+  local stdin_json="$3"
+  printf '%s' "$stdin_json" | CLAUDE_PROJECT_DIR="$dir" "$HOOK_SCRIPT" "$phase" 2>/dev/null
 }
 
 # --- Case 1: missing .stride_lite.md → silent no-op (exit 0, no stdout) ---
@@ -160,6 +198,38 @@ if [ -z "$out" ]; then
   ok "Agent + non-matching subagent_type → no-op"
 else
   nope "Agent + non-matching subagent_type should no-op" "stdout='$out'"
+fi
+
+# --- Case 11: before_task failing command → blocking exit 2 + failure JSON ---
+echo "Case 11: before_task failing command → blocking exit 2 + failure JSON"
+out=$(run_hook_dir "$FAIL_SCRATCH" pre '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite-copilot:task-explorer"}}')
+rc=$?
+if [ "$rc" -eq 2 ] && echo "$out" | grep -q '"hook":"before_task"' && echo "$out" | grep -q '"status":"failed"'; then
+  ok "before_task failing command → exit 2 (blocking) + failed-status JSON"
+else
+  nope "before_task failing command → exit 2 + failed JSON" "rc=$rc, stdout='$out'"
+fi
+
+# --- Case 12: after_task failing command → blocking exit 2 + failure JSON ---
+echo "Case 12: after_task failing command → blocking exit 2 + failure JSON"
+out=$(run_hook_dir "$FAIL_SCRATCH" pre '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite-copilot:task-reviewer"}}')
+rc=$?
+if [ "$rc" -eq 2 ] && echo "$out" | grep -q '"hook":"after_task"' && echo "$out" | grep -q '"status":"failed"'; then
+  ok "after_task failing command → exit 2 (blocking) + failed-status JSON"
+else
+  nope "after_task failing command → exit 2 + failed JSON" "rc=$rc, stdout='$out'"
+fi
+
+# --- Case 13: after_goal failing command → advisory exit 0 + failure JSON ---
+# PostToolUse cannot roll back the write, so a failing after_goal command must
+# still exit 0 (advisory) while emitting its failure JSON for the user.
+echo "Case 13: after_goal failing command → advisory exit 0 + failure JSON"
+out=$(run_hook_dir "$FAIL_SCRATCH" post '{"tool_name":"Edit","tool_input":{"file_path":"docs/implementation/PENDING/some-goal/goal.md","new_string":"... ## Completion Summary ..."}}')
+rc=$?
+if [ "$rc" -eq 0 ] && echo "$out" | grep -q '"hook":"after_goal"' && echo "$out" | grep -q '"status":"failed"'; then
+  ok "after_goal failing command → exit 0 (advisory) + failed-status JSON"
+else
+  nope "after_goal failing command → exit 0 + failed JSON" "rc=$rc, stdout='$out'"
 fi
 
 # --- Summary ---

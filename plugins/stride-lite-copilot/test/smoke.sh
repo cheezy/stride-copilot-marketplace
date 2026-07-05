@@ -348,13 +348,33 @@ else
 fi
 
 # ------------------------------------------------------------------
-# stride-lite-init template — mirrors skills/stride-lite-init/SKILL.md
+# stride-lite-init template — byte-parity against skills/stride-lite-init/SKILL.md
 # ------------------------------------------------------------------
 #
-# This helper writes the canonical .stride_lite.md template documented in
-# stride-lite/skills/stride-lite-init/SKILL.md to a caller-supplied target
-# path. It must stay byte-equivalent to the template in the SKILL.md — if
-# the SKILL.md changes, update this function in the same commit.
+# The "## Canonical template" block in skills/stride-lite-init/SKILL.md is the
+# single source of truth for the .stride_lite.md body. Rather than hand-copy it
+# here (which silently drifts out of sync — the bug this rework fixes), we
+# extract it from the SKILL.md at runtime and assert the init flow writes it
+# back byte-for-byte.
+SKILL_MD="$REPO_ROOT/skills/stride-lite-init/SKILL.md"
+
+# Extract the .stride_lite.md body from the ````markdown … ```` fence inside the
+# "## Canonical template" section. The outer fence is four backticks so the
+# template's own ```bash blocks nest without closing it early; we slice strictly
+# between the opening ````markdown line and its matching four-backtick close,
+# emitting neither fence line. Byte-exact by construction — no fuzzy matching.
+extract_canonical_template() {
+  awk '
+    /^## Canonical template$/      { in_section = 1; next }
+    in_section && /^````markdown$/ { in_block = 1; next }
+    in_block && /^````$/           { exit }
+    in_block                       { print }
+  ' "$SKILL_MD"
+}
+
+# The init flow writes the canonical template verbatim (SKILL.md Step 2 — "write
+# the canonical template … to $TARGET"). We source it from the SKILL.md rather
+# than embedding a copy, so the two can never drift apart.
 write_stride_lite_template() {
   local target="${1:-}"
   if [ -z "$target" ]; then
@@ -362,32 +382,7 @@ write_stride_lite_template() {
     return 1
   fi
   mkdir -p "$(dirname "$target")"
-  cat > "$target" <<'TEMPLATE'
-# Stride Lite Configuration
-
-This file is created by `/stride-lite:init`. Fill in the fields below.
-
-**Note (v0.2.0):** The hook sections are static configuration — stride-lite does not execute them. The format mirrors the full Stride plugin's `.stride.md` so your snippets can transfer between plugins later.
-
-## email
-
-your-email@example.com
-
-## before_task
-
-```bash
-```
-
-## after_task
-
-```bash
-```
-
-## after_goal
-
-```bash
-```
-TEMPLATE
+  extract_canonical_template > "$target"
 }
 
 echo ""
@@ -397,23 +392,49 @@ echo "stride-lite-init template"
 # the file; the EXIT trap cleans the whole tree.
 INIT_DIR="$SANDBOX/init-flow"
 INIT_TARGET="$INIT_DIR/.stride_lite.md"
-write_stride_lite_template "$INIT_TARGET"
 
-# Assertion 1: the file was written.
-if [ -f "$INIT_TARGET" ]; then
-  ok "writes .stride_lite.md to the target path"
+# Golden copy: the canonical template extracted straight from the SKILL.md.
+CANONICAL_TEMPLATE="$SANDBOX/canonical-template.md"
+extract_canonical_template > "$CANONICAL_TEMPLATE"
+
+# Assertion 1: the extraction is non-empty. A silent extraction failure (bad
+# fence match) would otherwise turn the byte-parity diff below into an
+# empty-vs-empty pass — exactly the drift-blind hole this rework closes.
+if [ -s "$CANONICAL_TEMPLATE" ]; then
+  ok "canonical template extracted from SKILL.md is non-empty"
 else
-  nope "writes .stride_lite.md to the target path" "file exists" "missing"
+  nope "canonical template extracted from SKILL.md is non-empty" \
+    "non-empty extraction" "empty — check the ````markdown fence in $SKILL_MD"
 fi
 
-# Assertion 2: the email section is present.
+# Run the init flow.
+write_stride_lite_template "$INIT_TARGET"
+
+# Assertion 2: the file was written.
+if [ -f "$INIT_TARGET" ]; then
+  ok "init flow writes .stride_lite.md to the target path"
+else
+  nope "init flow writes .stride_lite.md to the target path" "file exists" "missing"
+fi
+
+# Assertion 3: what the init flow wrote is byte-for-byte identical to the
+# canonical template extracted from the SKILL.md. This is the parity contract —
+# any divergence between the init flow's output and the SKILL.md source fails.
+if diff "$CANONICAL_TEMPLATE" "$INIT_TARGET" >/dev/null 2>&1; then
+  ok "init template is byte-identical to the canonical SKILL.md template"
+else
+  nope "init template is byte-identical to the canonical SKILL.md template" \
+    "no diff vs the $SKILL_MD canonical block" "diff found (template drifted)"
+fi
+
+# Assertion 4: the email section is present.
 if grep -qE '^## email$' "$INIT_TARGET"; then
   ok "template contains ## email section"
 else
   nope "template contains ## email section" "## email header line" "not found"
 fi
 
-# Assertion 3: the three hook sections appear in the exact required order.
+# Assertion 5: the three hook sections appear in the exact required order.
 BEFORE_LINE=$(grep -nE '^## before_task$' "$INIT_TARGET" | head -1 | cut -d: -f1)
 AFTER_LINE=$(grep -nE '^## after_task$' "$INIT_TARGET" | head -1 | cut -d: -f1)
 GOAL_LINE=$(grep -nE '^## after_goal$' "$INIT_TARGET" | head -1 | cut -d: -f1)
@@ -426,7 +447,7 @@ else
     "before=$BEFORE_LINE after=$AFTER_LINE goal=$GOAL_LINE"
 fi
 
-# Assertion 4: collision detection precondition — [ -e ] returns true on the
+# Assertion 6: collision detection precondition — [ -e ] returns true on the
 # now-existing file, so the SKILL.md's clobber-refusal branch would fire on a
 # second invocation without --force.
 if [ -e "$INIT_TARGET" ]; then

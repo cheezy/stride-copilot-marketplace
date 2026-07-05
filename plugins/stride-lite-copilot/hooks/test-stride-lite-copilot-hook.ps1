@@ -57,8 +57,44 @@ echo "after_goal fired"
 ```
 '@ | Set-Content -Path (Join-Path $Scratch '.stride_lite.md')
 
+# --- Failing-command fixture: three sections that each run a failing command
+# (`false`, exit 1) — drives the exit-code contract cases below. Kept in its own
+# scratch dir so it never perturbs the success-path .stride_lite.md above. ---
+$FailScratch = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "stride-lite-copilot-fail-$([System.Guid]::NewGuid())")
+New-Item -ItemType Directory -Force -Path $FailScratch | Out-Null
+
+@'
+## before_task
+
+```bash
+false
+```
+
+## after_task
+
+```bash
+false
+```
+
+## after_goal
+
+```bash
+false
+```
+'@ | Set-Content -Path (Join-Path $FailScratch '.stride_lite.md')
+
 function Run-Hook($phase, $stdinJson) {
     $env:CLAUDE_PROJECT_DIR = $Scratch
+    $result = $stdinJson | pwsh -NoProfile -File $HookScript $phase 2>$null
+    return $result
+}
+
+# Same as Run-Hook but against a caller-supplied project dir, so the failing-
+# command fixture drives the hook without touching the success-path scratch.
+# pwsh is the function's last external command, so $LASTEXITCODE in the caller
+# reflects the hook's real exit code.
+function Run-Hook-Dir($dir, $phase, $stdinJson) {
+    $env:CLAUDE_PROJECT_DIR = $dir
     $result = $stdinJson | pwsh -NoProfile -File $HookScript $phase 2>$null
     return $result
 }
@@ -116,8 +152,35 @@ if (-not $out) {
     Ok "Bash tool name → no-op"
 } else { Nope "Bash tool name should no-op" "stdout='$out'" }
 
+# --- Case 8: before_task failing command → blocking exit 2 + failure JSON ---
+Write-Host "Case 8: before_task failing command → blocking exit 2 + failure JSON"
+$out = Run-Hook-Dir $FailScratch 'pre' '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite-copilot:task-explorer"}}'
+$rc = $LASTEXITCODE
+if ($rc -eq 2 -and $out -match '"hook":"before_task"' -and $out -match '"status":"failed"') {
+    Ok "before_task failing command → exit 2 (blocking) + failed-status JSON"
+} else { Nope "before_task failing command → exit 2 + failed JSON" "rc=$rc, stdout='$out'" }
+
+# --- Case 9: after_task failing command → blocking exit 2 + failure JSON ---
+Write-Host "Case 9: after_task failing command → blocking exit 2 + failure JSON"
+$out = Run-Hook-Dir $FailScratch 'pre' '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite-copilot:task-reviewer"}}'
+$rc = $LASTEXITCODE
+if ($rc -eq 2 -and $out -match '"hook":"after_task"' -and $out -match '"status":"failed"') {
+    Ok "after_task failing command → exit 2 (blocking) + failed-status JSON"
+} else { Nope "after_task failing command → exit 2 + failed JSON" "rc=$rc, stdout='$out'" }
+
+# --- Case 10: after_goal failing command → advisory exit 0 + failure JSON ---
+# PostToolUse cannot roll back the write, so a failing after_goal command must
+# still exit 0 (advisory) while emitting its failure JSON for the user.
+Write-Host "Case 10: after_goal failing command → advisory exit 0 + failure JSON"
+$out = Run-Hook-Dir $FailScratch 'post' '{"tool_name":"Edit","tool_input":{"file_path":"docs/implementation/PENDING/some-goal/goal.md","new_string":"... ## Completion Summary ..."}}'
+$rc = $LASTEXITCODE
+if ($rc -eq 0 -and $out -match '"hook":"after_goal"' -and $out -match '"status":"failed"') {
+    Ok "after_goal failing command → exit 0 (advisory) + failed-status JSON"
+} else { Nope "after_goal failing command → exit 0 + failed JSON" "rc=$rc, stdout='$out'" }
+
 # --- Cleanup ---
 Remove-Item -Recurse -Force $Scratch -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $FailScratch -ErrorAction SilentlyContinue
 
 # --- Summary ---
 Write-Host ""
