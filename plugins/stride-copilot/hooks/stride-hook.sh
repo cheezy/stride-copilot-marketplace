@@ -17,6 +17,10 @@ PHASE="${1:-}"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"
 STRIDE_MD="$PROJECT_DIR/.stride.md"
 ENV_CACHE="$PROJECT_DIR/.stride-env-cache"
+# (D118) Canonical API-response snapshot. When present, after_goal detection and
+# env extraction prefer it over the harness-truncatable tool_response.stdout.
+# Best-effort fast path only — the reliability guarantee is D119's fresh call.
+RESPONSE_FILE="$PROJECT_DIR/.stride/.last-api-response.json"
 
 # --- Platform detection: delegate to PowerShell on native Windows ---
 # Git Bash (OSTYPE=msys*) and WSL have full bash — run directly.
@@ -130,9 +134,14 @@ capture_changed_files() {
   # changed_files. The match is anchored to the EXACT repo-root path (git
   # ls-files emits repo-root-relative paths), so a same-named file in a
   # subdirectory (e.g. sub/.stride-diff-upload-state) is still captured.
+  # (W1609) Also hard-exclude the whole root-level .stride/ state directory — it
+  # holds hook-internal artifacts (the orchestrator marker, the canonical
+  # .last-api-response.json capture) that are gitignored in real projects but
+  # must never appear in a task's changed_files even in repos that forgot to
+  # ignore them.
   local all_files
   all_files=$(printf '%s\n%s\n' "$tracked_files" "$untracked_files" \
-    | awk 'NF && $0 != ".stride-diff-upload-state" && $0 != ".stride-changed-files.json" && !seen[$0]++')
+    | awk 'NF && $0 != ".stride-diff-upload-state" && $0 != ".stride-changed-files.json" && $0 !~ /^\.stride\// && !seen[$0]++')
 
   if [ -z "$all_files" ]; then
     printf '[]\n'
@@ -788,58 +797,42 @@ run_stride_section() {
   return 0
 }
 
-# Detect an `after_goal` entry in the response's `hooks` array. Handles both
-# the host's wrapped form (`tool_response.stdout` is a JSON string whose
-# body contains the response) and raw-API-JSON form. Returns 0 when an entry
-# with name == "after_goal" is found, 1 otherwise. Gated on $HAS_JQ —
-# environments without jq cannot parse the response and degrade cleanly.
-response_has_after_goal() {
+# --- Canonical response-file fast path (D118) ---
+# The harness can truncate a large /complete tool_response.stdout mid-JSON,
+# which silently breaks after_goal detection and env extraction. When the agent
+# (or a PreToolUse capture) has written the full API response to the canonical
+# file ($RESPONSE_FILE), prefer it over the truncatable stdout. Prints the
+# file's JSON when it is present AND parses as valid JSON; prints nothing
+# otherwise so the caller falls back to the tool_response.stdout parse. Gated on
+# $HAS_JQ — the validity check needs jq, and a garbage/truncated file must never
+# shadow the stdout fallback. Best-effort only: a stale-but-valid file is used
+# as-is (D119's fresh call is the reliability guarantee, not this fast path).
+read_canonical_response() {
+  [ "${HAS_JQ:-false}" = "true" ] || return 0
+  [ -n "${RESPONSE_FILE:-}" ] || return 0
+  [ -f "$RESPONSE_FILE" ] || return 0
+
+  local _content
+  _content=$(cat "$RESPONSE_FILE" 2>/dev/null) || return 0
+  [ -n "$_content" ] || return 0
+
+  # Validate before trusting it — a truncated/garbage file must fall through.
+  echo "$_content" | jq -e . > /dev/null 2>&1 || return 0
+
+  printf '%s' "$_content"
+}
+
+# (W1609) Unwrap the API payload string from a hook input's .tool_response: the
+# GitHub Copilot Bash tool wraps it as {"stdout":"<json>"}, other harnesses
+# carry the API JSON directly. Prints the unwrapped payload (possibly
+# truncated), or nothing. Single-sourced so the read side
+# (extract_response_payload) and the write side (capture_canonical_response)
+# share one unwrap and cannot diverge. Gated on $HAS_JQ.
+unwrap_tool_response() {
   local _hook_input="$1"
   local _response _payload
 
-  [ "$HAS_JQ" = "true" ] || return 1
-  [ -n "$_hook_input" ] || return 1
-
-  _response=$(echo "$_hook_input" | jq -r '.tool_response // ""' 2>/dev/null || echo "")
-  [ -n "$_response" ] || return 1
-
-  if echo "$_response" | jq -e 'type == "object" and has("stdout")' > /dev/null 2>&1; then
-    _payload=$(echo "$_response" | jq -r '.stdout // ""' 2>/dev/null)
-  else
-    _payload="$_response"
-  fi
-
-  [ -n "$_payload" ] || return 1
-
-  echo "$_payload" \
-    | jq -e '(.hooks // []) | map(select(.name == "after_goal")) | length > 0' \
-        > /dev/null 2>&1
-}
-
-# Export the server-supplied `env` object from the response's after_goal hook
-# entry (W1512). The 2.11.0 CHANGELOG and stride-workflow SKILL promise that
-# GOAL_ID/GOAL_IDENTIFIER/GOAL_TITLE/GOAL_DESCRIPTION (plus BOARD_*/COLUMN_*/
-# AGENT_NAME when present) reach the after_goal child process, but nothing ever
-# extracted them — so a `## after_goal` section that references $GOAL_ID ran
-# with it empty. This function peels the response the same way
-# response_has_after_goal does, selects the FIRST after_goal hook entry's `env`
-# object, and exports each key VERBATIM into the current process environment so
-# the subsequent run_stride_section "after_goal" (which eval's the section's
-# commands) sees them.
-#
-# Contract:
-#   - Values are copied verbatim from the server payload; this NEVER invents,
-#     derives, or looks up any key client-side (in particular it never
-#     synthesizes GOAL_ID from the child task's parent_id).
-#   - A missing env object, an empty env object, or missing keys is a clean
-#     no-op — not an error.
-#   - Gated on $HAS_JQ: without jq the payload cannot be parsed, so the export
-#     degrades to nothing (matching response_has_after_goal's degrade path).
-export_after_goal_env() {
-  local _hook_input="$1"
-  local _response _payload _env
-
-  [ "$HAS_JQ" = "true" ] || return 0
+  [ "${HAS_JQ:-false}" = "true" ] || return 0
   [ -n "$_hook_input" ] || return 0
 
   _response=$(echo "$_hook_input" | jq -r '.tool_response // ""' 2>/dev/null || echo "")
@@ -851,6 +844,157 @@ export_after_goal_env() {
     _payload="$_response"
   fi
 
+  printf '%s' "$_payload"
+}
+
+# (W1609) Capture the current API response to the canonical file. The hook is a
+# PostToolUse observer, so the freshest untruncated data it can persist is THIS
+# call's tool_response.stdout when it parses as complete JSON. Writing it keeps
+# $RESPONSE_FILE current for the file-first resolver below: the claim env-cache
+# refresh and after_goal detection then read the CURRENT call's data instead of
+# a stale prior-call file. When the current stdout is itself truncated the file
+# is left untouched, so a value written out-of-band (a `curl ... | tee
+# "$RESPONSE_FILE"` / `--output` passthrough on the completion/claim/
+# mark_reviewed curls, or a future PreToolUse capture) survives as the
+# best-effort source. Only complete, valid JSON is ever written — a truncated
+# blob must never overwrite a good file. Gated on $HAS_JQ.
+capture_canonical_response() {
+  local _hook_input="$1"
+  local _payload
+
+  [ "${HAS_JQ:-false}" = "true" ] || return 0
+  [ -n "${RESPONSE_FILE:-}" ] || return 0
+
+  _payload=$(unwrap_tool_response "$_hook_input")
+  [ -n "$_payload" ] || return 0
+  # Only persist a COMPLETE, valid API JSON — a truncated blob must never
+  # overwrite a good (e.g. curl-tee'd) canonical file.
+  echo "$_payload" | jq -e . > /dev/null 2>&1 || return 0
+
+  mkdir -p "$(dirname "$RESPONSE_FILE")" 2>/dev/null || return 0
+  printf '%s' "$_payload" > "$RESPONSE_FILE" 2>/dev/null || true
+}
+
+# (D118/W1609) The single shared response resolver. Source order:
+#   1. the canonical response file (survives harness truncation) — D118
+#   2. tool_response.stdout, unwrapped from the Copilot {"stdout":...} shape
+#      or taken raw (other harnesses), when it is complete valid JSON
+#   3. the W1086 persisted-output file named by a "Full output saved to: <path>"
+#      stdout notice, when stdout was too large to inline
+# Falls back to the best-effort (possibly truncated) stdout blob as a last
+# resort; callers jq-guard their own use, so a truncated blob degrades cleanly.
+# Reused by response_has_after_goal, export_after_goal_env, AND the claim
+# env-cache/TASK_BASE_REF refresh so none of them can diverge (W1609 pitfall).
+extract_response_payload() {
+  local _hook_input="$1"
+  local _payload _notice _persist_line _persist_path _persist_json
+
+  [ "$HAS_JQ" = "true" ] || return 0
+
+  # (D118) Fast path — prefer the untruncated canonical response file.
+  _payload=$(read_canonical_response)
+  if [ -n "$_payload" ]; then
+    printf '%s' "$_payload"
+    return 0
+  fi
+
+  # Unwrap the current call's stdout payload (shared with capture_canonical_response).
+  _payload=$(unwrap_tool_response "$_hook_input")
+  [ -n "$_payload" ] || return 0
+
+  # Use the stdout payload when it is complete, valid JSON.
+  if echo "$_payload" | jq -e . > /dev/null 2>&1; then
+    printf '%s' "$_payload"
+    return 0
+  fi
+
+  # (W1086) Shape 3: persisted-output file fallback. When the response is large,
+  # the harness writes the tool output to a file and leaves only a notice —
+  # "Full output saved to: <absolute path>" — in stdout. Recover the API JSON by
+  # reading that file. The path is harness-controlled, so require an existing
+  # regular file and parse it with jq only — never source, eval, or write to it.
+  _notice="$_payload"
+  if printf '%s' "$_notice" | grep -qi 'saved to'; then
+    # Keep the path from its first "/" to end of the notice line so a path
+    # containing spaces survives; tolerate the notice wrapping it in quotes.
+    _persist_line=$(printf '%s\n' "$_notice" | grep -i 'saved to' | head -1)
+    _persist_path="/${_persist_line#*/}"
+    _persist_path="${_persist_path%\"}"
+    if [ -n "$_persist_line" ] && [ -f "$_persist_path" ]; then
+      _persist_json=$(cat "$_persist_path" 2>/dev/null || echo "")
+      if [ -n "$_persist_json" ] && echo "$_persist_json" | jq -e . > /dev/null 2>&1; then
+        printf '%s' "$_persist_json"
+        return 0
+      fi
+    fi
+  fi
+
+  # Best-effort last resort: whatever we unwrapped (possibly truncated).
+  printf '%s' "$_payload"
+}
+
+# Detect an `after_goal` entry in the response's `hooks` array. Handles both
+# the host's wrapped form (`tool_response.stdout` is a JSON string whose
+# body contains the response) and raw-API-JSON form. Returns 0 when an entry
+# with name == "after_goal" is found, 1 otherwise. Gated on $HAS_JQ —
+# environments without jq cannot parse the response and degrade cleanly.
+#
+# (D118/W1609) Payload source order is owned by the single shared resolver
+# extract_response_payload: canonical response file first (survives harness
+# truncation), then the tool_response.stdout unwrap, then the W1086 persisted-
+# output file. Delegating here keeps after_goal detection, env forwarding, and
+# the claim env-cache refresh on ONE resolver so they can never diverge.
+# (D119) Pure jq predicate on an ALREADY-RESOLVED payload string (no $INPUT
+# unwrap): does it carry an after_goal hook entry? Single-sourced so
+# response_has_after_goal and route_after_goal share one after_goal detection
+# expression and can never diverge.
+payload_has_after_goal() {
+  local _payload="$1"
+  [ "${HAS_JQ:-false}" = "true" ] || return 1
+  [ -n "$_payload" ] || return 1
+  echo "$_payload" \
+    | jq -e '(.hooks // []) | map(select(.name == "after_goal")) | length > 0' \
+        > /dev/null 2>&1
+}
+
+response_has_after_goal() {
+  local _hook_input="$1"
+
+  [ "$HAS_JQ" = "true" ] || return 1
+
+  payload_has_after_goal "$(extract_response_payload "$_hook_input")"
+}
+
+# Export the server-supplied `env` object from the response's after_goal hook
+# entry (W1512). The 2.11.0 CHANGELOG and stride-workflow SKILL promise that
+# GOAL_ID/GOAL_IDENTIFIER/GOAL_TITLE/GOAL_DESCRIPTION (plus BOARD_*/COLUMN_*/
+# AGENT_NAME when present) reach the after_goal child process, but nothing ever
+# extracted them — so a `## after_goal` section that references $GOAL_ID ran
+# with it empty. This function takes an ALREADY-RESOLVED response payload (the
+# caller resolves it once through extract_response_payload, or synthesizes it —
+# D119's fresh-call path does), selects the FIRST after_goal hook entry's `env`
+# object, and exports each key VERBATIM into the current process environment so
+# the subsequent run_stride_section "after_goal" (which eval's the section's
+# commands) sees them.
+#
+# (D119) Takes a resolved payload — NOT a hook input — so the D118 fast path and
+# the D119 fresh-call path can both feed run_after_goal_section a payload they
+# already resolved (the fast path via extract_response_payload, the fresh call
+# via the synthetic after_goal-entry wrapper it builds from the endpoint env).
+#
+# Contract:
+#   - Values are copied verbatim from the server payload; this NEVER invents,
+#     derives, or looks up any key client-side (in particular it never
+#     synthesizes GOAL_ID from the child task's parent_id).
+#   - A missing env object, an empty env object, or missing keys is a clean
+#     no-op — not an error.
+#   - Gated on $HAS_JQ: without jq the payload cannot be parsed, so the export
+#     degrades to nothing (matching response_has_after_goal's degrade path).
+export_after_goal_env() {
+  local _payload="$1"
+  local _env
+
+  [ "$HAS_JQ" = "true" ] || return 0
   [ -n "$_payload" ] || return 0
 
   # The `env` object from the FIRST after_goal hook entry, compacted to one
@@ -869,12 +1013,113 @@ export_after_goal_env() {
   # object yields no keys -> no iterations.
   local _keys _key _val
   _keys=$(echo "$_env" | jq -r 'keys_unsorted[]' 2>/dev/null || printf '')
-  [ -n "$_keys" ] || return 0
-  while IFS= read -r _key; do
-    [ -n "$_key" ] || continue
-    _val=$(echo "$_env" | jq -r --arg k "$_key" '.[$k] | if . == null then "" else tostring end' 2>/dev/null || printf '')
-    export "$_key=$_val"
-  done <<< "$_keys"
+  if [ -n "$_keys" ]; then
+    while IFS= read -r _key; do
+      [ -n "$_key" ] || continue
+      _val=$(echo "$_env" | jq -r --arg k "$_key" '.[$k] | if . == null then "" else tostring end' 2>/dev/null || printf '')
+      export "$_key=$_val"
+      # (W1612) Persist to the env cache as well, so the agent's SEPARATE
+      # follow-up PATCH /api/tasks/:goal_id/after_goal process (which does NOT
+      # inherit this hook's process env) can read GOAL_* too.
+      printf "%s='%s'\n" "$_key" "$_val" >> "$ENV_CACHE" 2>/dev/null || true
+    done <<< "$_keys"
+  fi
+
+  # (W1612) Parent-id fallback: the server may build the after_goal env from the
+  # completed child task and OMIT GOAL_ID (or send it empty). The parent id in
+  # the same response's data object IS the goal id — without it the ## after_goal
+  # section (and the follow-up PATCH /api/tasks/:goal_id/after_goal) has no
+  # target. Mirrors stride-hook's export_after_goal_env parent-id fallback.
+  if [ -z "${GOAL_ID:-}" ]; then
+    local _parent
+    _parent=$(echo "$_payload" | jq -r '.data.parent_id // .parent_id // empty' 2>/dev/null || true)
+    if [ -n "$_parent" ] && [ "$_parent" != "null" ]; then
+      export "GOAL_ID=$_parent"
+      printf "GOAL_ID='%s'\n" "$_parent" >> "$ENV_CACHE" 2>/dev/null || true
+    fi
+  fi
+}
+
+# --- After-goal execution (shared by the D118 fast path and the D119 fresh call) ---
+# (D119) Export GOAL_* from the given ALREADY-RESOLVED payload and run the local
+# ## after_goal section as a blocking hook, restoring HOOK_NAME afterward.
+# Centralised so both detection paths run the section identically — and, because
+# route_after_goal invokes exactly one path, exactly once (de-dup).
+run_after_goal_section() {
+  local _payload="$1"
+  # (W1512) Export GOAL_* (server-supplied) before the section runs. The section
+  # observes HOOK_NAME=after_goal per the documented contract; the routed value
+  # is restored afterwards because the cleanup gate keys on it.
+  export_after_goal_env "$_payload"
+  local _routed_hook_name="$HOOK_NAME"
+  export HOOK_NAME="after_goal"
+  run_stride_section "after_goal" || true
+  HOOK_NAME="$_routed_hook_name"
+  export HOOK_NAME
+}
+
+# (D119) Reliability guarantee. Detect after_goal via a fresh, hook-initiated
+# GET /api/tasks/:id/after_goal_status (the compact endpoint from kanban W1613).
+# A curl the hook spawns is NOT subject to the Bash-tool output truncation that
+# can gut the agent-handed /complete response, and it needs zero agent
+# cooperation. Runs the ## after_goal section from the endpoint's compact GOAL_*
+# env when after_goal_armed is true. Best-effort: a missing prerequisite
+# (jq/curl/TASK_ID/URL/token) or an unreachable / non-JSON endpoint degrades to a
+# clean no-op — the server's grace-window worker still completes the goal. Never
+# echoes the token. Returns 0 when it reached a definitive answer, 1 when it
+# could not run.
+detect_after_goal_via_api() {
+  [ "${HAS_JQ:-false}" = "true" ] || return 1
+  command -v curl > /dev/null 2>&1 || return 1
+  [ -n "${TASK_ID:-}" ] || return 1
+
+  local _api_base _token _resp _armed _payload
+  _api_base=$(resolve_stride_api_url)
+  _token=$(resolve_stride_api_token)
+  [ -n "$_api_base" ] && [ -n "$_token" ] || return 1
+
+  _resp=$(curl -s --max-time 10 \
+    -H "Authorization: Bearer $_token" \
+    "$_api_base/api/tasks/$TASK_ID/after_goal_status" 2>/dev/null || printf '')
+  [ -n "$_resp" ] || return 1
+  echo "$_resp" | jq -e . > /dev/null 2>&1 || return 1
+
+  _armed=$(echo "$_resp" | jq -r '.after_goal_armed // false' 2>/dev/null || printf 'false')
+  # Reached the server and got a definitive answer. Not armed → clean success.
+  [ "$_armed" = "true" ] || return 0
+
+  # Wrap the endpoint's flat env into the after_goal-hook-entry shape that
+  # export_after_goal_env consumes; carry goal_id as data.parent_id so a
+  # GOAL_ID parent-id fallback still applies if env omits it.
+  _payload=$(echo "$_resp" \
+    | jq -c '{hooks: [{name: "after_goal", env: (.env // {})}], data: {parent_id: .goal_id}}' \
+        2>/dev/null || printf '')
+  [ -n "$_payload" ] || return 1
+
+  run_after_goal_section "$_payload"
+  return 0
+}
+
+# --- After-goal routing (W788 / D118 / D119) ---
+# Decide whether to run the local ## after_goal section after a /complete or
+# /mark_reviewed post. Two mutually-exclusive paths, so the section runs at most
+# once (de-dup):
+#   * Fast path (D118): when the handed payload is COMPLETE, valid JSON it
+#     answers definitively — armed runs the section, parseable-but-absent means
+#     definitively not armed. No extra round-trip either way.
+#   * Reliability guarantee (D119): when the handed payload is truncated,
+#     absent, or unparseable, ask the server directly with a hook-spawned curl.
+route_after_goal() {
+  local _payload="$1"
+
+  [ "${HAS_JQ:-false}" = "true" ] || return 0
+
+  if [ -n "$_payload" ] && echo "$_payload" | jq -e . > /dev/null 2>&1; then
+    payload_has_after_goal "$_payload" && run_after_goal_section "$_payload"
+    return 0
+  fi
+
+  detect_after_goal_via_api || true
 }
 
 # Exit early if no phase argument or no .stride.md. Placed AFTER the
@@ -941,65 +1186,36 @@ esac
 # Not a Stride API call — exit cleanly
 [ -n "$HOOK_NAME" ] || exit 0
 
+# (W1609) Persist THIS call's response to the canonical file before the claim
+# env-cache refresh and env forwarding read it, so both resolve the current
+# call's data (file-first) rather than a stale prior-call file. A no-op when the
+# stdout is truncated (leaves any out-of-band tee/--output copy intact) or when
+# this is a pre-phase call with no tool_response yet.
+if [ "$PHASE" = "post" ]; then
+  capture_canonical_response "$INPUT"
+fi
+
 # --- Environment variable caching ---
 # After a successful claim (before_doing), extract task metadata from the API
 # response and cache it. All subsequent hooks load the cache so .stride.md
 # commands can reference $TASK_IDENTIFIER, $TASK_TITLE, etc.
 
 if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
-  RESPONSE=$(echo "$INPUT" | jq -r '.tool_response // ""' 2>/dev/null || echo "")
+  # (W1609) Resolve the claim response through the ONE shared resolver
+  # (extract_response_payload): canonical response file first, then the
+  # tool_response.stdout unwrap, then the W1086 persisted-output file. This is
+  # the same resolver after_goal detection and env forwarding use, so a
+  # harness-truncated claim stdout no longer diverges — when a canonical
+  # response file is present (the capture above, a curl tee, or D119) the full
+  # task JSON is recovered and TASK_BASE_REF / the changed_files scope stay
+  # correct instead of silently degrading to a stale base ref.
+  _claim_payload=$(extract_response_payload "$INPUT")
   TASK_JSON=""
-  INNER=""
-
-  if [ -n "$RESPONSE" ]; then
-    # tool_response may come in several shapes depending on the host:
-    #   1. {"stdout": "<api-json-string>", ...} — GitHub Copilot Bash tool wrapper
-    #   2. "<api-json-string>" — legacy harnesses that stringify the body
-    #   3. {"data": {...}} or {"id": ...} — raw API JSON object
-    #   4. persisted-output file fallback for oversized responses (W1086)
-
-    # Shape 1: wrapper object with .stdout key — peel and parse inner
-    if echo "$RESPONSE" | jq -e 'type == "object" and has("stdout")' > /dev/null 2>&1; then
-      INNER=$(echo "$RESPONSE" | jq -r '.stdout // ""' 2>/dev/null)
-      if [ -n "$INNER" ] && echo "$INNER" | jq -e '.data.id' > /dev/null 2>&1; then
-        TASK_JSON=$(echo "$INNER" | jq -c '.data' 2>/dev/null)
-      elif [ -n "$INNER" ] && echo "$INNER" | jq -e '.id' > /dev/null 2>&1; then
-        TASK_JSON="$INNER"
-      fi
-    fi
-
-    # Shapes 2 and 3: response itself is the API JSON
-    if [ -z "$TASK_JSON" ] && echo "$RESPONSE" | jq -e '.data.id' > /dev/null 2>&1; then
-      TASK_JSON=$(echo "$RESPONSE" | jq -c '.data' 2>/dev/null)
-    elif [ -z "$TASK_JSON" ] && echo "$RESPONSE" | jq -e '.id' > /dev/null 2>&1; then
-      TASK_JSON="$RESPONSE"
-    fi
-
-    # Shape 4: persisted-output file fallback (W1086). When the claim response
-    # is large (e.g. a task already carrying a previous attempt's changed_files
-    # snapshot), Copilot writes the tool output to a file and leaves only a
-    # notice — "Full output saved to: <absolute path>" — in stdout. Recover the
-    # API JSON by reading that file. The path is harness-controlled, so we
-    # require it to be an existing regular file and parse it with jq only —
-    # never source, eval, execute, or write to it.
-    if [ -z "$TASK_JSON" ]; then
-      _notice="$INNER"
-      [ -z "$_notice" ] && _notice="$RESPONSE"
-      if printf '%s' "$_notice" | grep -qi 'saved to'; then
-        # Keep the path from its first "/" to end of the notice line so a path
-        # containing spaces survives; tolerate the notice wrapping it in quotes.
-        _persist_line=$(printf '%s\n' "$_notice" | grep -i 'saved to' | head -1)
-        _persist_path="/${_persist_line#*/}"
-        _persist_path="${_persist_path%\"}"
-        if [ -n "$_persist_line" ] && [ -f "$_persist_path" ]; then
-          _persist_json=$(cat "$_persist_path" 2>/dev/null || echo "")
-          if [ -n "$_persist_json" ] && echo "$_persist_json" | jq -e '.data.id' > /dev/null 2>&1; then
-            TASK_JSON=$(echo "$_persist_json" | jq -c '.data' 2>/dev/null)
-          elif [ -n "$_persist_json" ] && echo "$_persist_json" | jq -e '.id' > /dev/null 2>&1; then
-            TASK_JSON="$_persist_json"
-          fi
-        fi
-      fi
+  if [ -n "$_claim_payload" ]; then
+    if echo "$_claim_payload" | jq -e '.data.id' > /dev/null 2>&1; then
+      TASK_JSON=$(echo "$_claim_payload" | jq -c '.data' 2>/dev/null)
+    elif echo "$_claim_payload" | jq -e '.id' > /dev/null 2>&1; then
+      TASK_JSON="$_claim_payload"
     fi
   fi
 
@@ -1090,24 +1306,20 @@ if [ "$PRIMARY_RC" -ne 0 ]; then
 fi
 
 # --- After-goal routing (W788 / mirrors stride v1.17.1 W504) ---
-# When the server bundles an `after_goal` entry in the response of /complete
-# or /mark_reviewed (last-child-of-goal case), run the local `## after_goal`
-# section as a blocking hook. Missing `## after_goal` in .stride.md is a
-# clean no-op (back-compat). Non-zero exits surface via the same structured
-# JSON shape as the primary hook; we do NOT propagate as a non-zero script
-# exit because the primary curl already succeeded — the failure is captured
-# in stdout for the agent to forward via PATCH /api/tasks/:goal_id/after_goal.
+# When completing the last child of a goal, run the local `## after_goal`
+# section as a blocking hook. Detection prefers the handed response when it is
+# complete (D118 fast path) and otherwise falls back to a fresh, hook-initiated
+# GET /api/tasks/:id/after_goal_status that is immune to harness truncation
+# (D119 — the reliability guarantee). route_after_goal keeps the two paths
+# mutually exclusive so the section runs at most once. Missing `## after_goal`
+# in .stride.md is a clean no-op (back-compat); the server's grace-window worker
+# still covers goal completion when neither path can detect it. A non-zero
+# section exit is surfaced via the structured JSON shape, never as a non-zero
+# script exit (the primary curl already succeeded).
 if [ "$PHASE" = "post" ]; then
   case "$COMMAND" in
     */api/tasks/*/complete*|*/api/tasks/*/mark_reviewed*)
-      if response_has_after_goal "$INPUT"; then
-        # (W1512) Export the server-supplied GOAL_*/BOARD_*/COLUMN_*/AGENT_NAME
-        # env vars from the after_goal hook entry BEFORE the section runs, so a
-        # `## after_goal` command referencing $GOAL_ID/$GOAL_IDENTIFIER/etc.
-        # sees the values the server sent (verbatim; never derived client-side).
-        export_after_goal_env "$INPUT"
-        run_stride_section "after_goal" || true
-      fi
+      route_after_goal "$(extract_response_payload "$INPUT")"
       ;;
   esac
 fi
