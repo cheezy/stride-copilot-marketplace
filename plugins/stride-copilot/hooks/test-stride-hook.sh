@@ -2022,7 +2022,10 @@ STRIDE
   fi
   rm -rf "$NOTOK_DIR" "$STUB_DIR"
 
-  # 9c: No TASK_ID in env cache → no PUT call
+  # 9c (D127): No TASK_ID in the env cache, but the /complete URL carries id 42 →
+  # the upload targets 42 (env-cache-independent, the D127 fix). Before D127 this
+  # skipped the PUT; making the upload depend on the env TASK_ID is the
+  # empty-changed_files bug this fix removes.
   NOID_DIR=$(mktemp -d)
   STUB_DIR=$(mktemp -d)
   NOID_FIXTURE="$NOID_DIR/curl-call.txt"
@@ -2057,11 +2060,11 @@ STRIDE
     COMPLETE_JSON='{"tool_input":{"command":"curl -X PATCH https://stride.example.com/api/tasks/42/complete -H \"Authorization: Bearer test_token\""}}'
     echo "$COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$PWD" PATH="$STUB_DIR:$PATH" bash "$HOOK_SCRIPT" pre > /dev/null 2>&1
   )
-  if [ ! -f "$NOID_FIXTURE" ]; then
-    echo -e "  ${GREEN}PASS${RESET}: 9c: missing TASK_ID → PUT skipped"
+  if grep -qF '/api/tasks/42/changed_files' "$NOID_FIXTURE" 2>/dev/null; then
+    echo -e "  ${GREEN}PASS${RESET}: 9c (D127): missing env TASK_ID → PUT still made, targeting the URL id (42)"
     PASS=$((PASS + 1))
   else
-    echo -e "  ${RED}FAIL${RESET}: 9c: PUT was made despite missing TASK_ID: $(cat "$NOID_FIXTURE")"
+    echo -e "  ${RED}FAIL${RESET}: 9c (D127): expected PUT to /api/tasks/42/changed_files, fixture: $(cat "$NOID_FIXTURE" 2>/dev/null || echo NONE)"
     FAIL=$((FAIL + 1))
   fi
   rm -rf "$NOID_DIR" "$STUB_DIR"
@@ -2174,6 +2177,57 @@ STRIDE
     FAIL=$((FAIL + 1))
   fi
   rm -rf "$NOJQ_DIR" "$NOJQ_STUB"
+
+  # 9g (D127): task_id_from_command extracts the id from a /complete or
+  # /mark_reviewed URL and returns empty for the claim/next paths (no id) and for
+  # a non-numeric segment. This is what lets the after_doing upload target the
+  # correct task even when a hidden claim left a stale TASK_ID in the env cache
+  # (the G321/D126 empty-changed_files root cause).
+  TIDCMD_OUT=$(
+    # shellcheck disable=SC1090
+    source "$HOOK_SCRIPT" 2>/dev/null || true
+    printf '%s|%s|%s|%s|%s' \
+      "$(task_id_from_command 'curl -X PATCH https://x/api/tasks/7777/complete -H h')" \
+      "$(task_id_from_command 'curl -X PATCH https://x/api/tasks/42/mark_reviewed')" \
+      "$(task_id_from_command 'curl -X POST https://x/api/tasks/claim')" \
+      "$(task_id_from_command 'curl -s https://x/api/tasks/next')" \
+      "$(task_id_from_command 'curl https://x/api/tasks/abc/complete')"
+  )
+  assert_eq "9g (D127): task_id_from_command reads /complete + /mark_reviewed ids, empty for claim/next/non-numeric" \
+    "7777|42|||" "$TIDCMD_OUT"
+
+  # 9h (D127): finalize_after_doing PUTs to the task id in the /complete URL, NOT
+  # a stale env-cache TASK_ID. With TASK_ID=111111 (stale, prior task) and the
+  # command completing /api/tasks/7777/complete, the changed_files PUT must target
+  # 7777 — the fix for the empty-changed_files root cause.
+  TGT_DIR=$(mktemp -d); TGT_STUB=$(mktemp -d)
+  TGT_FIXTURE="$TGT_DIR/curl-call.txt"
+  make_curl_stub "$TGT_STUB" "$TGT_FIXTURE" 0 200
+  (
+    setup_put_repo "$TGT_DIR" || exit 1
+    cat > .stride_auth.md << 'AUTH'
+- **API URL:** `https://tgt.example.com`
+- **API Token:** `tok`
+AUTH
+    # shellcheck disable=SC1090
+    source "$HOOK_SCRIPT" 2>/dev/null || true
+    HAS_JQ=true
+    HOOK_NAME=after_doing
+    TASK_ID=111111
+    COMMAND='curl -X PATCH https://tgt.example.com/api/tasks/7777/complete -H "Authorization: Bearer tok"'
+    PROJECT_DIR="$TGT_DIR"
+    PATH="$TGT_STUB:$PATH"
+    finalize_after_doing
+  ) > /dev/null 2>&1
+  if grep -qF '/api/tasks/7777/changed_files' "$TGT_FIXTURE" 2>/dev/null \
+     && ! grep -qF '/api/tasks/111111/changed_files' "$TGT_FIXTURE" 2>/dev/null; then
+    echo -e "  ${GREEN}PASS${RESET}: 9h (D127): finalize PUTs to the /complete URL task id (7777), not the stale env TASK_ID (111111)"
+    PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 9h (D127): PUT did not target 7777. Fixture: $(cat "$TGT_FIXTURE" 2>/dev/null)"
+    FAIL=$((FAIL + 1))
+  fi
+  rm -rf "$TGT_DIR" "$TGT_STUB"
 fi
 
 # ============================================================
@@ -2786,6 +2840,69 @@ STRIDE
   SH_CALLS_J=$(grep -c '^ARGS:' "$SH_FIXTURE_J" 2>/dev/null)
   assert_eq "12j: healthy pre-path upload is not repeated by before_review" 2 "$SH_CALLS_J"
   rm -rf "$SH_DIR_J" "$STUB_DIR"
+
+  # 12k (W1658): before_review self-heal TERMINAL failure. When the LAST retry
+  # PUT returns non-2xx, the hook surfaces a loud UNRESOLVED warning on stderr
+  # (distinct from the per-attempt warning) AND marks the state file
+  # `unresolved=yes` — so a definitively-lost diff is never silently swallowed.
+  # The hook exit code is unchanged (the completion still succeeds).
+  SH_DIR_K=$(mktemp -d)
+  STUB_DIR=$(mktemp -d)
+  make_curl_stub "$STUB_DIR" "$SH_DIR_K/curl-call.txt" 0 500
+  SH_STDERR_K=$(
+    setup_put_repo "$SH_DIR_K" > /dev/null 2>&1 || exit 1
+    echo "$W1094_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$PWD" PATH="$STUB_DIR:$PATH" bash "$HOOK_SCRIPT" post 2>&1 1>/dev/null
+  )
+  SH_RC_K=$(
+    setup_put_repo "$SH_DIR_K" > /dev/null 2>&1 || exit 1
+    echo "$W1094_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$PWD" PATH="$STUB_DIR:$PATH" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+    echo $?
+  )
+  SH_STATE_K=$(cat "$SH_DIR_K/.stride-diff-upload-state" 2>/dev/null)
+  assert_eq "12k (W1658): terminal self-heal failure never fails the hook" "0" "$SH_RC_K"
+  if printf '%s' "$SH_STDERR_K" | grep -qF 'CHANGED_FILES UPLOAD UNRESOLVED'; then
+    echo -e "  ${GREEN}PASS${RESET}: 12k (W1658): terminal self-heal failure prints a loud UNRESOLVED warning"
+    PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 12k (W1658): no loud UNRESOLVED warning on stderr: $SH_STDERR_K"
+    FAIL=$((FAIL + 1))
+  fi
+  assert_contains "12k (W1658): state file marked unresolved on terminal failure" "unresolved=yes" "$SH_STATE_K"
+  rm -rf "$SH_DIR_K" "$STUB_DIR"
+
+  # 12l (W1658): a 2xx self-heal never emits the UNRESOLVED message (a
+  # legitimately-empty diff that still PUTs 2xx takes the success path), and the
+  # unresolved mark self-clears on a later success — record_diff_upload_state
+  # truncates the state file, so a subsequent healthy PUT drops the marker.
+  SH_DIR_L=$(mktemp -d)
+  STUB_FAIL_L=$(mktemp -d)
+  STUB_OK_L=$(mktemp -d)
+  make_curl_stub "$STUB_FAIL_L" "$SH_DIR_L/curl-fail.txt" 0 500
+  make_curl_stub "$STUB_OK_L" "$SH_DIR_L/curl-ok.txt" 0 200
+  SH_STDERR_L=$(
+    setup_put_repo "$SH_DIR_L" > /dev/null 2>&1 || exit 1
+    # First before_review retry fails (500) → marks unresolved.
+    echo "$W1094_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$PWD" PATH="$STUB_FAIL_L:$PATH" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+    # Second before_review retry succeeds (200) → overwrites state, clears mark.
+    echo "$W1094_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$PWD" PATH="$STUB_OK_L:$PATH" bash "$HOOK_SCRIPT" post 2>&1 1>/dev/null
+  )
+  SH_STATE_L=$(cat "$SH_DIR_L/.stride-diff-upload-state" 2>/dev/null)
+  if printf '%s' "$SH_STATE_L" | grep -qF 'unresolved=yes'; then
+    echo -e "  ${RED}FAIL${RESET}: 12l (W1658): unresolved mark survived a later successful PUT: $SH_STATE_L"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 12l (W1658): a later 2xx PUT overwrites the state file and clears the unresolved mark"
+    PASS=$((PASS + 1))
+  fi
+  if printf '%s' "$SH_STDERR_L" | grep -qF 'CHANGED_FILES UPLOAD UNRESOLVED'; then
+    echo -e "  ${RED}FAIL${RESET}: 12l (W1658): a 2xx self-heal must not emit the UNRESOLVED message: $SH_STDERR_L"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 12l (W1658): a 2xx self-heal does not emit the UNRESOLVED message"
+    PASS=$((PASS + 1))
+  fi
+  assert_contains "12l (W1658): state records the healthy 2xx after self-clear" "http_code=200" "$SH_STATE_L"
+  rm -rf "$SH_DIR_L" "$STUB_FAIL_L" "$STUB_OK_L"
 fi
 
 # ============================================================

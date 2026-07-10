@@ -12,7 +12,7 @@
     {
       "name": "stride-copilot",
       "description": "Task lifecycle skills and custom agents for Stride kanban: claiming, completing, and creating tasks and goals for AI agents in GitHub Copilot CLI.",
-      "version": "2.24.0",
+      "version": "2.24.1",
       "source": "./plugins/stride-copilot"
     },
     {

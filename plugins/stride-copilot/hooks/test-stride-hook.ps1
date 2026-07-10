@@ -1006,7 +1006,10 @@ $noTokJson = "{`"tool_input`":{`"command`":`"$noTokCmd`"}}"
 $r = Invoke-HookScript -InputJson $noTokJson -Phase 'pre' -ProjectDir $noTokProj
 Assert-Exit "8d: hook exits 0 with no Bearer token" 0 $r.ExitCode
 
-# 8e: No TASK_ID in env cache → finalize no-ops
+# 8e (D127): No TASK_ID in the env cache. The /complete URL carries id 99, so
+# finalize now targets that URL id (env-cache-independent) rather than no-opping.
+# The host is unreachable here, so the PUT fails silently and the hook still
+# exits 0 — the targeting itself is asserted by the dedicated listener test 8g.
 $noIdProj = Join-Path $TmpDir 'no-id-project'
 New-Item -ItemType Directory -Path $noIdProj -Force | Out-Null
 Set-Content -Path (Join-Path $noIdProj '.stride.md') -Value @'
@@ -1107,6 +1110,53 @@ try {
         Stop-Job $exclListenerJob -ErrorAction SilentlyContinue
         Remove-Job $exclListenerJob -Force -ErrorAction SilentlyContinue
     }
+}
+
+# 8g (D127): finalize PUTs to the task id in the /complete URL, NOT a stale
+# env-cache TASK_ID. Env cache says 111 (a previous task); the completion URL
+# says 99 → the PUT must target /api/tasks/99/changed_files. This is the fix for
+# the empty-changed_files root cause: a hidden claim leaves a stale env TASK_ID,
+# and before D127 the diff was PUT to that wrong task.
+$d127Proj = Join-Path $TmpDir 'd127-url-id-project'
+New-Item -ItemType Directory -Path $d127Proj -Force | Out-Null
+Set-Content -Path (Join-Path $d127Proj '.stride.md') -Value @'
+## after_doing
+```bash
+echo "ran"
+```
+'@ -Encoding UTF8
+Set-Content -Path (Join-Path $d127Proj '.stride-changed-files.json') `
+    -Value '[{"path":"foo.txt","diff":"body"}]' -Encoding UTF8
+# STALE env cache — a previous task's id.
+Set-Content -Path (Join-Path $d127Proj '.stride-env-cache') `
+    -Value "TASK_ID=111`nTASK_BASE_REF=abc" -Encoding UTF8
+
+$d127Port = 18879
+$d127Fixture = Join-Path $TmpDir 'd127-fixture.json'
+if (Test-Path $d127Fixture) { Remove-Item -Force $d127Fixture }
+$d127Job = Start-Job -ArgumentList $d127Port, $d127Fixture -ScriptBlock {
+    param($Port, $Fixture)
+    $l = [System.Net.HttpListener]::new()
+    $l.Prefixes.Add("http://localhost:$Port/")
+    try {
+        $l.Start(); $ctx = $l.GetContext(); $req = $ctx.Request
+        @{ Path = $req.Url.AbsolutePath } | ConvertTo-Json -Compress | Set-Content -Path $Fixture -Encoding UTF8
+        $resp = $ctx.Response; $resp.StatusCode = 200; $resp.OutputStream.Close()
+    } catch { } finally { if ($l.IsListening) { $l.Stop() } }
+}
+try {
+    $null = Wait-ForListener -Port $d127Port
+    $d127Cmd = "curl -X PATCH http://localhost:$d127Port/api/tasks/99/complete -H `"Authorization: Bearer tok`""
+    $d127Json = @{ tool_input = @{ command = $d127Cmd } } | ConvertTo-Json -Compress
+    $r = Invoke-HookScript -InputJson $d127Json -Phase 'pre' -ProjectDir $d127Proj
+    Assert-Exit "8g: hook exits 0 after PUT" 0 $r.ExitCode
+    Wait-Job $d127Job -Timeout 8 | Out-Null
+    Remove-Job $d127Job -Force -ErrorAction SilentlyContinue
+    $d127Path = if (Test-Path $d127Fixture) { (Get-Content -Raw -Path $d127Fixture | ConvertFrom-Json).Path } else { '' }
+    Assert-Contains "8g (D127): PUT targets the URL task id (99), not the stale env id (111)" "/api/tasks/99/changed_files" $d127Path
+    Assert-NotContains "8g (D127): PUT does not target the stale env id (111)" "/api/tasks/111/changed_files" $d127Path
+} finally {
+    Remove-Job $d127Job -Force -ErrorAction SilentlyContinue
 }
 
 # ============================================================
@@ -1418,6 +1468,49 @@ if (-not (Test-Path (Join-Path $shProjI '.stride-changed-files.json'))) {
 } else {
     Write-Host "  FAIL: 9i: snapshot survived the after_review cleanup" -ForegroundColor Red
     $script:FAIL++
+}
+
+# 9j (W1658): before_review self-heal TERMINAL failure — when the last retry PUT
+# returns non-2xx, the hook prints a loud UNRESOLVED warning on stderr AND marks
+# the state file `unresolved=yes` (a definitively-lost diff is never silently
+# swallowed). The hook exit code is unchanged (the completion still succeeds).
+$w1658Proj = Join-Path $TmpDir 'sh-w1658-terminal'
+New-Item -ItemType Directory -Path $w1658Proj -Force | Out-Null
+Set-Content -Path (Join-Path $w1658Proj '.stride.md') -Value @'
+## before_review
+```bash
+echo "reviewing"
+```
+'@ -Encoding UTF8
+# Pre-existing snapshot (the ps1 self-heal re-PUTs the on-disk snapshot; it does
+# not re-capture). No state file → the self-heal retries.
+Set-Content -Path (Join-Path $w1658Proj '.stride-changed-files.json') `
+    -Value '[{"path":"foo.txt","diff":"body"}]' -Encoding UTF8
+
+$w1658Port = 18883
+$w1658Job = Start-Job -ArgumentList $w1658Port -ScriptBlock {
+    param($Port)
+    $l = [System.Net.HttpListener]::new()
+    $l.Prefixes.Add("http://localhost:$Port/")
+    try {
+        $l.Start(); $ctx = $l.GetContext()
+        $resp = $ctx.Response; $resp.StatusCode = 500; $resp.OutputStream.Close()
+    } catch { } finally { if ($l.IsListening) { $l.Stop() } }
+}
+try {
+    $null = Wait-ForListener -Port $w1658Port
+    $w1658Cmd = "curl -X PATCH http://localhost:$w1658Port/api/tasks/77/complete -H `"Authorization: Bearer tok`""
+    $w1658Json = @{ tool_input = @{ command = $w1658Cmd } } | ConvertTo-Json -Compress
+    $r = Invoke-HookScript -InputJson $w1658Json -Phase 'post' -ProjectDir $w1658Proj
+    Wait-Job $w1658Job -Timeout 8 | Out-Null
+    Remove-Job $w1658Job -Force -ErrorAction SilentlyContinue
+    Assert-Exit "9j (W1658): terminal self-heal failure never fails the hook" 0 $r.ExitCode
+    Assert-Contains "9j (W1658): terminal self-heal failure prints a loud UNRESOLVED warning" "CHANGED_FILES UPLOAD UNRESOLVED" $r.Stderr
+    $w1658StateFile = Join-Path $w1658Proj '.stride-diff-upload-state'
+    $w1658State = if (Test-Path $w1658StateFile) { Get-Content -Raw -Path $w1658StateFile } else { '' }
+    Assert-Contains "9j (W1658): state file marked unresolved on terminal failure" "unresolved=yes" $w1658State
+} finally {
+    Remove-Job $w1658Job -Force -ErrorAction SilentlyContinue
 }
 
 # ============================================================
