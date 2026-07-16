@@ -22,13 +22,19 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
    ```bash
    rsync -a --delete \
      --exclude='.git' \
+     --exclude='.stride' \
      --exclude='.stride_auth.md' \
      --exclude='.env' \
+     --exclude='.env.local' \
      --exclude='*.local' \
+     --exclude='.stride-env-cache' \
+     --exclude='.stride-changed-files.json' \
      /path/to/stride-copilot/ plugins/stride-copilot/
    ```
 
-   `--delete` ensures files removed upstream are also removed from the vendored copy. Never copy `.git`, `.stride_auth.md`, `.env`, or `*.local` — this repo is **public**.
+   `--delete` ensures files removed upstream are also removed from the vendored copy. Never copy `.git`, the `.stride/` runtime dir, `.stride_auth.md`, `.env*`, `*.local`, or the `.stride-env-cache` / `.stride-changed-files.json` runtime artifacts — this repo is **public**.
+
+   This exclude list is **identical to the one in [Adding a new plugin](#adding-a-new-plugin)** below, and to the `stride-codex-marketplace` `RELEASE.md`. Keep all three in lockstep: the plugin repo you rsync *from* sits beside a real `.stride_auth.md`, so this list is the primary containment. Do not rely on the vendored copy's own `.gitignore` catching a stray — that is luck, not design.
 
 2. **Bump the plugin entry version** in `.github/plugin/marketplace.json` so the `stride-copilot` entry's `version` matches the vendored `plugins/stride-copilot/plugin.json` version (`X.Y.Z`).
 
@@ -43,11 +49,13 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 5. **Scan for secrets**, then commit and push:
 
    ```bash
-   git grep -nI 'BEGIN .*PRIVATE KEY\|ghp_\|github_pat_' $(git rev-list --all) | head   # expect empty
+   git grep -nI 'BEGIN [A-Z ]*PRIVATE KEY\|ghp_[A-Za-z0-9]\{20,\}\|github_pat_[A-Za-z0-9_]\{20,\}\|stride_dev_[A-Za-z0-9+/=]\{30,\}\|stride_prod_[A-Za-z0-9+/=]\{30,\}' $(git rev-list --all)   # expect empty
    git add -A
    git commit -m "Sync stride-copilot to X.Y.Z"
    git push origin main
    ```
+
+   **Expect literally zero output.** Any hit is a real finding — investigate before pushing. See [About the secret-scan pattern](#about-the-secret-scan-pattern) for why each clause is shaped the way it is; do not simplify it without re-reading that section.
 
 ## Checklist
 
@@ -55,7 +63,7 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 - [ ] `marketplace.json` plugin entry `version` == vendored `plugin.json` version
 - [ ] README `Plugins` table version updated to match
 - [ ] Verify command prints `synced at X.Y.Z`
-- [ ] Secret scan clean, committed and pushed
+- [ ] Secret scan returns zero output, committed and pushed
 
 ## Adding a new plugin
 
@@ -95,11 +103,13 @@ Assume the new plugin `<name>` has a tagged release `vX.Y.Z`. From the repositor
 6. **Scan for secrets**, then commit and push:
 
    ```bash
-   git grep -nI 'BEGIN .*PRIVATE KEY\|ghp_\|github_pat_' $(git rev-list --all) | head   # expect empty
+   git grep -nI 'BEGIN [A-Z ]*PRIVATE KEY\|ghp_[A-Za-z0-9]\{20,\}\|github_pat_[A-Za-z0-9_]\{20,\}\|stride_dev_[A-Za-z0-9+/=]\{30,\}\|stride_prod_[A-Za-z0-9+/=]\{30,\}' $(git rev-list --all)   # expect empty
    git add -A
    git commit -m "Add <name> as a marketplace plugin"
    git push origin main
    ```
+
+   **Expect literally zero output.** Any hit is a real finding — investigate before pushing. This is the same pattern as the [Sync steps](#sync-steps); keep the two identical. See [About the secret-scan pattern](#about-the-secret-scan-pattern).
 
 ### Add-a-plugin checklist
 
@@ -108,4 +118,22 @@ Assume the new plugin `<name>` has a tagged release `vX.Y.Z`. From the repositor
 - [ ] `metadata.version` bumped (minor)
 - [ ] README `Plugins` table row added
 - [ ] Verify command prints `all N plugins resolve and versions match`
-- [ ] Secret scan clean, committed and pushed
+- [ ] Secret scan returns zero output, committed and pushed
+
+## About the secret-scan pattern
+
+The scan in both flows above is one pattern; keep them identical. Each clause is shaped deliberately, and simplifying any of them reintroduces a bug this repo has already had.
+
+| Clause | Why it is shaped this way |
+|---|---|
+| `stride_dev_[A-Za-z0-9+/=]\{30,\}` | **This repo's own product tokens.** A real Stride bearer token is **always exactly 43** characters after the prefix — the generator is `:crypto.strong_rand_bytes(32) \|> Base.encode64(padding: false)`, so the length is fixed, and `Base.encode64` (not `url_encode64`) emits the `A-Za-z0-9+/` alphabet, never a run-breaking `_` or `-`. The vendored plugins carry ~12 synthetic fixtures (`stride_dev_PRODUCTIONTOKEN`, `stride_dev_TEST_TOKEN_FOR_SMOKE_TEST_ONLY`, `stride_dev_your_token_here`, …) whose longest unbroken run is **15** characters — every one is either short or broken by an `_`. The `{30,}` bound sits between 15 and 43, so it catches every real token and reports none of the fixtures. A bare `stride_dev_` clause would fire on all 12, and a scan that is always red is a scan everyone learns to ignore. |
+| `stride_prod_[A-Za-z0-9+/=]\{30,\}` | Same reasoning for production tokens. |
+| `BEGIN [A-Z ]*PRIVATE KEY` | Matches `BEGIN RSA/EC/OPENSSH/… PRIVATE KEY`. It is **not** `BEGIN .*PRIVATE KEY`, because `.*` matches the literal `.*` in this file — the old pattern reported *this document* as a leak on every run, forever, via `git rev-list --all`. `[A-Z ]*` cannot match `.` or `*`, so the pattern no longer finds itself. |
+| `ghp_[A-Za-z0-9]\{20,\}` / `github_pat_[A-Za-z0-9_]\{20,\}` | Real GitHub tokens, not the bare prefixes. The bare form matched this file's own prose and the pattern text itself. |
+
+Two consequences worth keeping:
+
+- **Zero output is the pass condition.** There is no `| head` and no `grep -v` allow-list, because the pattern excludes fixtures and self-matches structurally rather than filtering them after the fact. An allow-list rots as fixtures are added; a shape-based bound does not.
+- **The scan covers all history** (`$(git rev-list --all)`), so a token committed and later removed is still caught. That is also why a self-matching pattern is unacceptable: it would be permanently red.
+
+To re-validate after editing the pattern: plant a realistic 43-character fake token in a scratch file, confirm the scan reports it, delete it, and confirm the scan then returns nothing across all history.
