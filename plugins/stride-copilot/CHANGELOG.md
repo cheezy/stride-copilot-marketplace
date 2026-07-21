@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.27.0] - 2026-07-21
+
+### Added — optional Manual & Exploratory Testing integration with `stride-copilot-exploratory-testing` (G349)
+
+The task lifecycle can now run a task's `manual_tests` as real exploratory sessions when the companion [`stride-copilot-exploratory-testing`](https://github.com/cheezy/stride-copilot-exploratory-testing) plugin is installed — without any server change, new completion field, or new `workflow_steps` name.
+
+- **`stride-workflow` (W1791)** gains a gated **Step 5.5: Manual & Exploratory Testing**, placed between Self-Review (Step 5) and Execute Hooks (Step 6). It is doubly gated — it runs only when the task's `testing_strategy.manual_tests` is non-empty **and** the `stride-copilot-exploratory-testing` plugin is available in the session (detected by its `stride-exploratory-testing-explore` skill / `explorer` agent appearing in the session's available lists; availability only, never blind execution). Each manual test is framed as a charter and driven by the `explorer` under the plugin's absolute safety boundary (no destructive or production-mutating actions; an unreachable app is reported as an obstacle, never a completion failure). Uses a decimal step number so no existing step numbers or cross-references change; the flowchart and quick-reference card are updated.
+- **`stride-subagent-workflow` (W1792)** documents the dispatch as an optional, externally-provided **Phase 3.5** in the decision matrix, mirroring the task-explorer/task-reviewer phase style (trigger, inputs, outputs, graceful skip). The trigger wording is kept identical to Step 5.5.
+- **`stride-completing-tasks` (W1793)** documents recording the findings in existing tolerant fields only — a summary in `completion_notes` and, when a reviewer ran, the `reviewer_result.testing_strategy` note — with an explicit no-op fallback (plugin absent or no `manual_tests` → the completion payload is byte-for-byte unchanged). No new server-validated field and no new `workflow_steps` name, keeping the strict-completion-validation contract intact.
+- **`stride-creating-tasks` / `stride-creating-goals` (W1794)** gain an advisory authoring note beside their `manual_tests` documentation: when the companion plugin is installed each entry runs as an exploratory charter, so phrase entries as chartable scenarios (a target plus the information/risk to discover), with a before/after example. Advisory only — it adds no required field and does not change the `testing_strategy` shape or the review_queue empty-pill gate, so existing terse entries still validate.
+
+**Graceful degradation:** when the companion plugin is not installed, the entire integration is inert — manual tests remain a human responsibility and nothing about the core lifecycle changes. The integration is purely additive.
+
+### Testing
+
+Documentation/skill-text only; no test suite is exercised. Verified by grep sweep and cross-file consistency check: the Step 5.5 trigger wording matches the Phase 3.5 trigger and the completion-recording guidance; the flowchart and quick-reference cards in both workflow skills include the new step; and no new completion field or `workflow_steps` name was introduced.
+
+### Backward compatibility
+
+Fully backward compatible. Skill-text only — no hook logic, `.stride.md`, env-var, or `.stride_auth.md` change, and no completion-payload schema change. Agents without the companion plugin see identical behavior.
+
+### Source
+
+G349 — "Integrate the stride-copilot-exploratory-testing plugin into the stride-copilot manual-testing workflow" (tasks W1791, W1792, W1793, W1794, W1795).
+
+### Fixed — the enrichment surface documented create and update bodies without their `task` root key (D151)
+
+`stride-enriching-tasks` documented submitting an enriched task with a bare body: `POST /api/tasks` carried `-d '{...enriched task JSON...}'` and no `agent_name`. The server requires a `{"task": {...}}` envelope and rejects a bare object with `422 Missing 'task' key`, so an agent following the enrichment skill literally built a rejected request and — once corrected by hand — created a task with no attribution fallback. The create example now shows the envelope with `"agent_name": "GitHub Copilot"` beside the `task` key, matching the Request Envelope section in `stride-creating-tasks` and the plain agent name this port already sends on claim and complete.
+
+The same file's `PATCH /api/tasks/:id` example was broken the same way and is fixed too — but its rule differs and the doc now says so: `PATCH` needs the identical `task` root key, yet takes **no** `agent_name`, because attribution is create-only and `created_by_agent` is forbidden on update. Conflating the two would have been its own defect.
+
+The `task-enricher` agent doc is deliberately **left unwrapped**: its JSON is the agent's return value for the orchestrator to submit, not a request body, so an envelope there would be wrong. It gains a note saying exactly that, and pointing at who does the wrapping.
+
+This surface was missed by goal G4687 (the fleet-wide `agent_name` rollout) because it sits outside that goal's tasks' `key_files` and outside both of their grep sweeps.
+
+### Testing
+
+Documentation-only; no test suite is exercised. Verified by grep sweep: the enrichment create example carries the envelope and this port's own agent name (`GitHub Copilot`), matching its `stride-creating-tasks` Request Envelope section; every curl body in the file is brace-balanced; and no other file in the port documents a create body.
+
+### Backward compatibility
+
+Fully backward compatible. Documentation/skill-text only — no hook logic, `.stride.md`, env-var, or `.stride_auth.md` change. The documented shapes are corrected to what the server has always required; nothing that previously worked stops working.
+
+### Source
+
+D151 — follow-up to goal G4687; the gap was recorded by the W1684 reviewer as out of scope at the time. Kanban `task_controller.ex` is the contract of record: `create/2` reads `agent_name` beside the `task` key, `update/2` requires `task` and reads no `agent_name`.
+
 ## [2.26.0] - 2026-07-16
 
 ### Added — every documented create payload carries a top-level `agent_name` (W1688)
