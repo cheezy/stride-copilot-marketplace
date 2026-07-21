@@ -1,4 +1,4 @@
-# Smoke Test — stride-security-review-copilot
+# Smoke Test — stride-copilot-security-review
 
 This document describes the manual end-to-end verification procedure for the ported plugin. Run it after each change to the agent prompt, the `security-review-essentials` skill, or the plugin manifest, and before publishing a new release.
 
@@ -10,21 +10,21 @@ The smoke test exercises **two fixtures**: one that MUST produce a finding (posi
 
 - **Copilot CLI** installed and on `$PATH`. Verify with `copilot --version`.
 - **A test repository** initialized with `git init` somewhere on your filesystem. The skill scopes its review by `git diff HEAD` or `git ls-files`, so the procedure needs an actual git working tree to run against.
-- **The plugin installed locally.** From the repository root of this plugin checkout (`stride-security-review-copilot/`), run:
+- **The plugin installed locally.** From the repository root of this plugin checkout (`stride-copilot-security-review/`), run:
 
   ```bash
   copilot plugin install .
   ```
 
-  (Alternatively, install from the remote: `copilot plugin install https://github.com/cheezy/stride-security-review-copilot`.)
+  (Alternatively, install from the remote: `copilot plugin install https://github.com/cheezy/stride-copilot-security-review`.)
 
-  Verify with `copilot plugin list` — `stride-security-review-copilot` should appear with the version from `plugin.json` (currently `0.1.0`).
+  Verify with `copilot plugin list` — `stride-copilot-security-review` should appear with the version from `plugin.json` (currently `0.1.0`).
 
 - **The fixture files copied into your test repository.** The positive- and negative-control fixtures live in this plugin's `test/fixtures/` directory; copy them into your test repository's working tree before running the procedure:
 
   ```bash
-  cp /path/to/stride-security-review-copilot/test/fixtures/command_injection.rb     ./
-  cp /path/to/stride-security-review-copilot/test/fixtures/phoenix_fragment_safe.ex ./
+  cp /path/to/stride-copilot-security-review/test/fixtures/command_injection.rb     ./
+  cp /path/to/stride-copilot-security-review/test/fixtures/phoenix_fragment_safe.ex ./
   git add command_injection.rb phoenix_fragment_safe.ex
   ```
 
@@ -126,7 +126,7 @@ If either check fails, look here first — these are the failure modes most like
 
 ### Plugin manifest
 
-- **`plugin.json` is at the wrong path.** Copilot expects it at the plugin root, NOT under `.claude-plugin/`. Verify `ls stride-security-review-copilot/plugin.json` succeeds and `ls stride-security-review-copilot/.claude-plugin/` fails.
+- **`plugin.json` is at the wrong path.** Copilot expects it at the plugin root, NOT under `.claude-plugin/`. Verify `ls stride-copilot-security-review/plugin.json` succeeds and `ls stride-copilot-security-review/.claude-plugin/` fails.
 - **`agents:` or `skills:` discovery keys are missing.** The manifest must declare `agents: "agents/"` and `skills: ["skills/"]` — without these, Copilot won't auto-discover the agent or the skill.
 - **`hooks:` key is present pointing at a non-existent file.** This plugin ships no hooks. Adding the key without a corresponding `hooks/hooks.json` blocks plugin load.
 
@@ -139,4 +139,4 @@ If either check fails, look here first — these are the failure modes most like
 
 - **You see the plugin install but cannot activate the skill non-interactively.** Until Copilot CLI ships a settled non-interactive batch mode, the eval runner (`scripts/run_eval.sh`) and the reference CI workflow (`.github/workflows/security-review.yml`) still depend on the Claude Code CLI — see their `TODO(copilot-port)` headers. The interactive smoke test described above DOES work in current Copilot CLI; it's the automation around it that's waiting on the batch-mode landing.
 
-If none of the above match the symptom, capture the full skill output (or the raw JSON via `--json`) and open an issue at <https://github.com/cheezy/stride-security-review-copilot/issues> with the fixture name, the expected finding from `EXPECTED.md`, and the actual output.
+If none of the above match the symptom, capture the full skill output (or the raw JSON via `--json`) and open an issue at <https://github.com/cheezy/stride-copilot-security-review/issues> with the fixture name, the expected finding from `EXPECTED.md`, and the actual output.

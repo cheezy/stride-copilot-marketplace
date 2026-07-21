@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-20
+
+### Changed
+
+- **Renamed the plugin `stride-security-review-copilot` → `stride-copilot-security-review`** for naming consistency with the other `stride-copilot-*` Copilot ports. The GitHub repository was renamed (GitHub keeps an old→new redirect), and `plugin.json` (`name`, `homepage`, `repository`), `README.md`, and `docs/SMOKE_TEST.md` were updated to the new name. **Breaking for existing installs:** reinstall under the new name (`copilot plugin install https://github.com/cheezy/stride-copilot-security-review`); the old `stride-security-review-copilot` install identity no longer matches.
+
 ## [0.2.0] - 2026-07-04
 
 ### Fixed
@@ -38,5 +44,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - The reference CI workflow (`.github/workflows/security-review.yml`) and the eval runner (`scripts/run_eval.sh`) currently install and invoke the Claude Code CLI; both files carry `TODO(copilot-port)` headers documenting the replacement targets for when Copilot CLI ships a settled non-interactive batch mode.
 - The SARIF schema validator example in `schema/README.md` also references `claude -p` and is annotated with a `TODO(copilot-port)` for the same reason.
 
-[0.2.0]: https://github.com/cheezy/stride-security-review-copilot/releases/tag/v0.2.0
-[0.1.0]: https://github.com/cheezy/stride-security-review-copilot/releases/tag/v0.1.0
+[0.3.0]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.3.0
+[0.2.0]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.2.0
+[0.1.0]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.1.0

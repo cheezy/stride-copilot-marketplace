@@ -1,4 +1,4 @@
-# stride-security-review-copilot
+# stride-copilot-security-review
 
 **AI-powered security review of code changes as a GitHub Copilot CLI plugin.**
 
@@ -11,15 +11,15 @@ This is the Copilot CLI port of [`stride-security-review`](https://github.com/ch
 Install via the Copilot CLI plugin command:
 
 ```bash
-copilot plugin install https://github.com/cheezy/stride-security-review-copilot
+copilot plugin install https://github.com/cheezy/stride-copilot-security-review
 ```
 
 ### Plugin management
 
 ```bash
 copilot plugin list                                   # View installed plugins
-copilot plugin update stride-security-review-copilot  # Update to latest version
-copilot plugin uninstall stride-security-review-copilot
+copilot plugin update stride-copilot-security-review  # Update to latest version
+copilot plugin uninstall stride-copilot-security-review
 ```
 
 The plugin auto-discovers the agent and the skill on install. No further configuration needed.
@@ -332,7 +332,7 @@ The runner asserts `(file, vulnerability_class, severity, count)`. CWE and OWASP
 
 ## Contributing
 
-Issues and PRs welcome at <https://github.com/cheezy/stride-security-review-copilot>. For prompt or filter changes, please include a smoke-test diff and the expected finding in your PR description so reviewers can verify the change does what you say.
+Issues and PRs welcome at <https://github.com/cheezy/stride-copilot-security-review>. For prompt or filter changes, please include a smoke-test diff and the expected finding in your PR description so reviewers can verify the change does what you say.
 
 ## Relationship to stride-security-review
 

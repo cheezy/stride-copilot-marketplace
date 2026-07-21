@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-07-20
+
+### Changed
+
+- **Renamed the plugin `stride-lite-copilot` → `stride-copilot-lite`** for naming consistency with the other `stride-copilot-*` Copilot ports. The GitHub repository was renamed (GitHub keeps an old→new redirect); `plugin.json` (`name`, `homepage`, `repository`), the four `hooks/` scripts (`stride-copilot-lite-hook.sh` / `.ps1` and their test harnesses), `hooks/hooks.json`, `AGENTS.md`, `README.md`, and the skill/agent docs were updated to the new name. **Breaking for existing installs:** reinstall under the new name; the old `stride-lite-copilot` install identity no longer matches.
+
 ## [0.2.0] - 2026-07-05
 
 ### Changed

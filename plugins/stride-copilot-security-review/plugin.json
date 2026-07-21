@@ -1,13 +1,13 @@
 {
-  "name": "stride-security-review-copilot",
+  "name": "stride-copilot-security-review",
   "description": "AI-powered security review for code changes via the security-review-essentials skill. Two scan modes (diff / --full), seven framework rule packs (Android/Kotlin, Django/Python, Express/Node.js, iOS/Swift, Phoenix/Elixir, Rails/Ruby, React/Next.js) covering the full mobile + web + Node ecosystem with semantic-analysis vulnerability detection. Multi-platform CI/CD rule pack (8 platforms), Web defense-in-depth pack covering security headers (CSP/HSTS/X-Frame-Options/cookie flags), MAESTRO 7-layer agentic-AI classification with explicit non-AI mapping, RCI critique loop, baseline suppression, surgical-fix patches, SARIF v2.1.0 output for GitHub Code Scanning, --fail-on severity gating for CI, and --base <ref> for PR-against-base diffs. Ships a reference GitHub Actions workflow and a TAP 13 eval runner over 64 fixtures with positive-and-negative-control coverage. Loosely based on anthropics/claude-code-security-review.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "Jeff Morgan",
     "email": "cheezy@letstango.ca"
   },
-  "homepage": "https://github.com/cheezy/stride-security-review-copilot",
-  "repository": "https://github.com/cheezy/stride-security-review-copilot",
+  "homepage": "https://github.com/cheezy/stride-copilot-security-review",
+  "repository": "https://github.com/cheezy/stride-copilot-security-review",
   "license": "MIT",
   "keywords": ["security", "code-review", "claude-code", "ai-agents"],
   "agents": "agents/",
