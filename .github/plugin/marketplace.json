@@ -28,10 +28,10 @@
       "source": "./plugins/stride-security-review-copilot"
     },
     {
-      "name": "stride-lite-copilot",
+      "name": "stride-copilot-lite",
       "description": "Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt — no API calls, no kanban auth.",
       "version": "0.2.0",
-      "source": "./plugins/stride-lite-copilot"
+      "source": "./plugins/stride-copilot-lite"
     },
     {
       "name": "launchdarkly-copilot",
