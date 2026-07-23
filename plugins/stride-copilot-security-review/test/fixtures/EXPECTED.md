@@ -92,6 +92,13 @@ These fixtures are look-alike-but-safe versions of patterns that should fire els
 - [ ] `ci_cd/circleci_unpinned.yml` → supply_chain (medium), `cwe: ["CWE-1357"]`, `owasp: ["A08:2021"]` — orb references using semver (`@4.1.0`) and `@volatile`; both are mutable. CircleCI ecosystem.
 - [ ] `ci_cd/bitbucket_secrets_in_fork.yml` → insecure_config (high) AND insecure_config (high), `cwe: ["CWE-732", "CWE-200"]`, `owasp: ["A05:2021", "A01:2021"]` — pull-request pipeline runs with `deployment: production` (exposes the deploy secret on fork-triggered builds, Rule 3) AND embeds `$BITBUCKET_PR_TITLE` in the same `curl` call that carries `$PRODUCTION_DEPLOY_TOKEN` (Rule 4). Bitbucket Pipelines ecosystem.
 
+### Considerations mode (per-consideration verdicts)
+
+These fixtures exercise the agent's `considerations` input mode: a unified diff paired with a task's `security_considerations` list. Each fixture is a `.diff` file plus a sibling `<stem>.considerations` file holding the considerations list, one per non-empty line (the `.considerations` sidecar is an input, not an independently-registered fixture). The eval runner dispatches the agent in `considerations` mode (`mode: considerations` + the diff + the resolved list) and asserts the ordered `consideration_verdicts[].status` values against the row plus a backing-finding expectation. The grammar is `→ CONSIDERATIONS <s1>,<s2>,…` where each `<si>` ∈ `mitigated | partial | unmitigated` in the same order as the `.considerations` file, followed by `AND finding` (positive control — at least one backing `findings[]` entry expected) or `AND clean` (negative control — zero findings expected). Because `consideration_verdicts` is non-deterministic agent output, the assertion lives in `run_eval.sh`, mirroring how the findings fixtures are asserted rather than golden-compared.
+
+- [ ] `considerations/token_logging_unmitigated.diff` → CONSIDERATIONS unmitigated,mitigated AND finding — POSITIVE control: the diff swaps a parameterized query for an f-string built from `request.args`, leaving "input is parameterized" **unmitigated** (with a backing `injection` finding) while the log line still omits the token so "tokens never logged" stays **mitigated**.
+- [ ] `considerations/parameterized_query_all_mitigated.diff` → CONSIDERATIONS mitigated,mitigated AND clean — NEGATIVE control: the diff replaces a string-concatenated query and a token-logging call with a parameterized query and a token-free log line, **mitigating** both considerations and introducing no new finding.
+
 ## How to run the smoke test
 
 1. In a Claude Code session with the `stride-security-review` plugin installed, `cd` into a clean clone of the `stride-security-review` repo.
