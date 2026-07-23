@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-23
+
+### Fixed — the agent-dispatch-failure exit-code contract now matches the procedure (G377: D173)
+
+Ported from the upstream source-of-truth fix (`cheezy/stride-security-review` D170). The Step 6 exit-code table (in `skills/security-review-essentials/SKILL.md`) documented exit `2` for an "agent dispatch failure", but the three agent-response-failure branches — Step 4a (diff-mode dispatch), Step 4b (full-mode batch), and Step 4.5 (RCI pass) — only printed a one-line error and "stopped", never running `exit 2`. A `--fail-on` CI gate therefore observed an unspecified exit code (not the documented `2`) when the reviewer returned unparseable JSON. Applying the identical **Option A** resolution: each of the three branches now runs a final `exit 2` via the shell after printing its error, mirroring the Step 1 misuse pattern used by every other exit-2 case (`--fail-on`, `--base`, `--considerations`, `--sarif`/`--json` conflict). The exit-code table's `0`/`1`/`2` meanings are unchanged; the exit-code semantics are identical to the corrected CC source, adapted only to the Copilot port's "via the shell" tool phrasing. The README exit-code contract (already documenting exit 2 for an agent dispatch failure) stays in sync. Also restored the missing `[0.4.0]` CHANGELOG footer link surfaced during this review.
+
 ## [0.4.0] - 2026-07-23
 
 ### Added — `considerations` mode verifies a task's security_considerations were actually mitigated
@@ -54,6 +60,8 @@ Eval coverage adds a considerations lane to the TAP runner: paired positive-cont
 - The reference CI workflow (`.github/workflows/security-review.yml`) and the eval runner (`scripts/run_eval.sh`) currently install and invoke the Claude Code CLI; both files carry `TODO(copilot-port)` headers documenting the replacement targets for when Copilot CLI ships a settled non-interactive batch mode.
 - The SARIF schema validator example in `schema/README.md` also references `claude -p` and is annotated with a `TODO(copilot-port)` for the same reason.
 
+[0.4.1]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.4.1
+[0.4.0]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.4.0
 [0.3.0]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.1.0

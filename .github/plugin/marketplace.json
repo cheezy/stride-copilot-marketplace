@@ -24,7 +24,7 @@
     {
       "name": "stride-copilot-security-review",
       "description": "AI-powered security review for code changes via the security-review-essentials skill: multi-language semantic vulnerability detection with SARIF output and CI severity gating.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "source": "./plugins/stride-copilot-security-review"
     },
     {
