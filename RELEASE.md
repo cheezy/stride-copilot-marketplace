@@ -4,12 +4,17 @@ This marketplace **vendors a pinned copy** of each plugin's tree under `plugins/
 
 Run this process every time an upstream plugin (e.g. [`stride-copilot`](https://github.com/cheezy/stride-copilot)) cuts a new release.
 
-## Two distinct versions
+## Three version numbers to keep straight
 
-Keep these straight — they are not the same field:
+These are three independent things — do not sync one to another:
 
-- **Catalog version** — `metadata.version` in `marketplace.json`. Describes the marketplace catalog itself. Bump it only when the catalog structure changes, not on every plugin release.
+- **Catalog version** — `metadata.version` in `marketplace.json`. Describes the marketplace catalog itself. Bump it only when the catalog structure changes — in practice, only when a plugin is **added** (see [Adding a new plugin](#adding-a-new-plugin)) — not on every plugin release.
 - **Plugin entry version** — the `version` on each object in the `plugins[]` array. This **must equal the vendored plugin's own `plugin.json` version**. This is the field that goes stale on a plugin release.
+- **Catalog tag series** — this repository's own `git` tags (`v2.35.0` and counting). This series is **independent of the catalog version and of every plugin version**: it advances by one minor bump per release of *this repo*, whether that release was a plugin sync or a new plugin. It is **not** derived from `metadata.version` (which sits far behind, and only moves when a plugin is added) and **not** derived from the plugin's `X.Y.Z`. Never reuse a plugin's version as the catalog tag — the two series collide in shape, and a plugin tag and a catalog tag with the same name point at unrelated trees. Take the next free number in this repo's own series:
+
+  ```bash
+  git tag --list --sort=-v:refname | head -1   # highest existing catalog tag
+  ```
 
 The README [`Plugins` table](README.md#plugins) also lists each plugin's version for humans — keep it in sync with the plugin entry version too.
 
@@ -57,6 +62,26 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 
    **Expect literally zero output.** Any hit is a real finding — investigate before pushing. See [About the secret-scan pattern](#about-the-secret-scan-pattern) for why each clause is shaped the way it is; do not simplify it without re-reading that section.
 
+6. **Tag the catalog** with the next free number in *this repo's* tag series — **not** the plugin's `X.Y.Z`, and **not** `metadata.version` (see [Three version numbers to keep straight](#three-version-numbers-to-keep-straight)). Writing `vA.B.C` for that catalog tag:
+
+   ```bash
+   git tag --list --sort=-v:refname | head -1   # highest existing catalog tag
+   git tag vA.B.C
+   git push origin vA.B.C
+   ```
+
+7. **Cut the GitHub release** for that tag:
+
+   ```bash
+   gh release create vA.B.C --title "vA.B.C" --notes "Sync stride-copilot to X.Y.Z"
+   ```
+
+   The tag is `vA.B.C` (this repo's series); the plugin version `X.Y.Z` belongs in the notes, describing *what* the release syncs.
+
+   **Publishing a release requires the user's explicit authorization in that turn.** It creates a public artifact on a public repository, and authorization to perform the sync — or to run any earlier step here — does not carry over to this one. If you have not been told to release in the current turn, stop after step 6 and ask.
+
+   A sync that stops before these two steps leaves the catalog pushed but unreleased. That is the gap this section exists to close, so treat steps 6 and 7 as part of the release, not as optional follow-up.
+
 ## Checklist
 
 - [ ] Vendored tree re-synced with `--delete`, no `.git` / secret files copied
@@ -64,6 +89,8 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 - [ ] README `Plugins` table version updated to match
 - [ ] Verify command prints `synced at X.Y.Z`
 - [ ] Secret scan returns zero output, committed and pushed
+- [ ] Catalog tagged `vA.B.C` — next free number in this repo's series, not the plugin's `X.Y.Z` — and the tag pushed
+- [ ] GitHub release cut for `vA.B.C`, with the user's explicit authorization in that turn
 
 ## Adding a new plugin
 
