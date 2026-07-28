@@ -31,7 +31,7 @@ copilot plugin uninstall stride-copilot         # Remove a plugin
 
 | Plugin | Version | Description |
 |--------|---------|-------------|
-| [`stride-copilot`](plugins/stride-copilot) | 2.29.0 | Task lifecycle skills and custom agents for Stride kanban: claiming, completing, and creating tasks and goals for AI agents in GitHub Copilot CLI. |
+| [`stride-copilot`](plugins/stride-copilot) | 2.30.0 | Task lifecycle skills and custom agents for Stride kanban: claiming, completing, and creating tasks and goals for AI agents in GitHub Copilot CLI. |
 | [`stride-copilot-ideation`](plugins/stride-copilot-ideation) | 0.4.0 | Turn an idea into shipped Stride tasks from GitHub Copilot CLI: an interactive ideation session that produces a committed requirements doc, plus a stridify step that decomposes it into a Stride batch and posts it to the API. |
 | [`stride-copilot-security-review`](plugins/stride-copilot-security-review) | 0.4.1 | AI-powered security review for code changes via the `security-review-essentials` skill: multi-language semantic vulnerability detection with SARIF output and CI severity gating. |
 | [`stride-copilot-lite`](plugins/stride-copilot-lite) | 0.3.0 | Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt — no API calls, no kanban auth. |
