@@ -48,7 +48,7 @@ budget. Those are parked as candidate charters, not tested.
 - The intended maximum file size, and whether the generic "Something went wrong"
   error should name the limit or offending row.
 - Whether any server-side file-type validation exists at all (the client has none).
-- Whether a rapid double-submit of the same import double-counts — untested this box.
+- Whether a rapid double-submit of the same import double-counts — untested this session.
 
 ---
 
@@ -57,16 +57,16 @@ budget. Those are parked as candidate charters, not tested.
 *(the team-review lens — run through this out loud so nothing, including a gut
 feeling, goes uncaptured)*
 
-- **Past** — What happened: a 90-minute time-boxed session against the CSV import,
-  probing malformed, oversized, wrong-encoding, and cross-tenant files, with a clean
-  baseline as the oracle.
+- **Past** — What happened: a single budgeted exploratory session against the CSV
+  import (12-probe budget, 7 probes attempted), probing malformed, oversized,
+  wrong-encoding, and cross-tenant files, with a clean baseline as the oracle.
 - **Results** — What was achieved: two real bugs (one Critical tenant-isolation leak,
   one High encoding-corruption), three open questions for product, and one new
   candidate charter (disguised file types). Coverage: input-shape and tenant-scope
   dimensions of the import; not size beyond 250 MB, not double-submit.
 - **Obstacles** — What got in the way: the 250 MB upload ate most of the setup budget
   and the generic error gave no row-level detail, so I couldn't isolate the
-  size-failure boundary within the box.
+  size-failure boundary within this session.
 - **Outlook** — What's left: charter #5 (export tenant isolation) is now higher
   priority given the import leak; add charters for disguised file types and
   double-submit double-counting; get product intent on the truncated-row behavior.

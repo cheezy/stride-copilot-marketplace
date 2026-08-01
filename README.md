@@ -36,7 +36,7 @@ copilot plugin uninstall stride-copilot         # Remove a plugin
 | [`stride-copilot-security-review`](plugins/stride-copilot-security-review) | 0.4.1 | AI-powered security review for code changes via the `security-review-essentials` skill: multi-language semantic vulnerability detection with SARIF output and CI severity gating. |
 | [`stride-copilot-lite`](plugins/stride-copilot-lite) | 0.3.0 | Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt — no API calls, no kanban auth. |
 | [`launchdarkly-copilot`](plugins/launchdarkly-copilot) | 0.2.0 | Generate correct, testable, and removable LaunchDarkly feature-flag code from GitHub Copilot — Java server SDK plus the TypeScript SDKs (Node server, client-side JS, React) with scaffolding, flag-removal skills, and an anti-pattern review agent. |
-| [`stride-copilot-exploratory-testing`](plugins/stride-copilot-exploratory-testing) | 0.1.0 | Structured, charter-based exploratory testing for GitHub Copilot CLI: plan charters, run timeboxed sessions with named heuristics and oracles, and capture findings — the Copilot port of cheezy/stride-exploratory-testing. |
+| [`stride-copilot-exploratory-testing`](plugins/stride-copilot-exploratory-testing) | 0.2.0 | Structured, charter-based exploratory testing for GitHub Copilot CLI: plan charters, run timeboxed sessions with named heuristics and oracles, and capture findings — the Copilot port of cheezy/stride-exploratory-testing. |
 
 The plugin list above is kept in sync with the `plugins[]` array in [`.github/plugin/marketplace.json`](.github/plugin/marketplace.json).
 

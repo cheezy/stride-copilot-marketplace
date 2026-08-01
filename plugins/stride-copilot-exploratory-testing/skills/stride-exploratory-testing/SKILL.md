@@ -1,6 +1,6 @@
 ---
 name: stride-exploratory-testing
-description: Use when you want to test software the way a skilled human tester does — discovering risks, questions, and bugs that scripted or automated checks miss. This is the front door to the stride-copilot-exploratory-testing plugin: it teaches the mental model (Tested = Checked + Explored), frames a time-boxed session, and routes each request to the right sub-skill (chartering, heuristics, oracles, session) or command-derived skill (charter, nightmare-headline, explore, recon, debrief). Activate it when the user asks to "explore", "poke at", "do exploratory/manual testing on", "find bugs in", "charter a session for", or otherwise investigate a feature rather than confirm a known expectation. Copilot port of the upstream stride-exploratory-testing plugin; because Copilot CLI has no commands, the five upstream commands are ported as named skills, not commands.
+description: Use when you want to test software the way a skilled human tester does — discovering risks, questions, and bugs that scripted or automated checks miss. This is the front door to the stride-copilot-exploratory-testing plugin: it teaches the mental model (Tested = Checked + Explored), frames a time-boxed session, and routes each request to the right sub-skill (chartering, heuristics, oracles, bug-advocacy, session) or command-derived skill (charter, nightmare-headline, explore, pair, recon, debrief, harden). Activate it when the user asks to "explore", "poke at", "do exploratory/manual testing on", "find bugs in", "charter a session for", or otherwise investigate a feature rather than confirm a known expectation. Copilot port of the upstream stride-exploratory-testing plugin; because Copilot CLI has no commands, the seven upstream commands are ported as named skills, not commands.
 skills_version: "1.0"
 ---
 
@@ -10,7 +10,7 @@ This is the orchestrator skill — the plugin's front door. It teaches the explo
 
 Exploratory testing is not a fallback for "when there's no time to automate." It is a distinct, disciplined activity: **simultaneous test design, test execution, learning, and steering** (Kaner). The tester designs the next test from what the last one just revealed, and keeps steering toward risk. This skill exists so the agent applies that discipline coherently instead of poking at a feature ad hoc.
 
-> **Copilot port note.** GitHub Copilot CLI has **no commands**. The five upstream capabilities that were commands in the Claude Code plugin — charter, nightmare-headline, explore, recon, debrief — are ported here as **named skills** (prefixed `stride-exploratory-testing-*`) that you *activate* by name. There is intentionally no `commands/` directory. Wherever this skill says "activate the `stride-exploratory-testing-explore` skill," that is the Copilot equivalent of the upstream command.
+> **Copilot port note.** GitHub Copilot CLI has **no commands**. The seven upstream capabilities that were commands in the Claude Code plugin — charter, nightmare-headline, explore, pair, recon, debrief, harden — are ported here as **named skills** (prefixed `stride-exploratory-testing-*`) that you *activate* by name. There is intentionally no `commands/` directory. Wherever this skill says "activate the `stride-exploratory-testing-explore` skill," that is the Copilot equivalent of the upstream command.
 
 ## The mental model
 
@@ -32,7 +32,7 @@ The four aspects run *simultaneously*: you are designing, executing, learning, a
 
 ## The five engines
 
-Every exploratory session runs on five engines. Each sub-skill deepens one or more of them:
+Every exploratory session runs on five engines. Most sub-skills deepen one or more of them; `session` and `bug-advocacy` sit around the loop rather than inside it — one holds the session together, the other takes over once a result has been judged a defect:
 
 | Engine | What it does | Where the depth lives |
 |---|---|---|
@@ -40,11 +40,11 @@ Every exploratory session runs on five engines. Each sub-skill deepens one or mo
 | **Observation** | Noticing what the system actually did — not what you expected. Fed by oracles. | `oracles` skill |
 | **Variables** | The factors you can deliberately vary — data, state, sequence, timing, environment, configuration. | `heuristics` skill (variable catalog) |
 | **Oracles** | How you decide something is *wrong* — consistency heuristics, references, claims, user expectations. | `oracles` skill |
-| **Heuristics** | Idea generators that get you unstuck — cheat sheets, Tours, SFDPOT, and other lenses. | `heuristics` skill (SFDPOT lives in `chartering`) |
+| **Heuristics** | Idea generators that get you unstuck — cheat sheets, Tours, SFDIPOT, and other lenses. | `heuristics` skill (SFDIPOT lives in `chartering`) |
 
 ## The session lifecycle (time-boxed)
 
-Exploration is managed as **time-boxed sessions** (Session-Based Test Management, ~60–120 min of uninterrupted, chartered, reviewable work). One session runs:
+Exploration is managed as **time-boxed sessions** (Session-Based Test Management, ~60–120 min of uninterrupted, chartered, reviewable work — that is the **human** box; an agent-run session is bounded by a probe budget instead, see the `session` skill). One session runs:
 
 1. **Charter** — state the mission before touching the system.
 2. **Recon** — a quick pass to learn the landscape and refine the charter.
@@ -71,21 +71,24 @@ The `session` skill owns this lifecycle end to end; the `stride-exploratory-test
 
 ## Routing table
 
-Match the user's request to the right destination. The orchestrator frames and routes; it does not duplicate the skills' content. The four sub-skills are unprefixed; the five command-derived skills carry the `stride-exploratory-testing-` prefix.
+Match the user's request to the right destination. The orchestrator frames and routes; it does not duplicate the skills' content. The five sub-skills are unprefixed; the seven command-derived skills carry the `stride-exploratory-testing-` prefix.
 
 | The user wants to… | Route to |
 |---|---|
 | Frame a mission / decide *what* to test / write a charter | **`chartering`** skill |
-| Enumerate targets systematically / apply SFDPOT | **`chartering`** skill (SFDPOT lens) |
+| Enumerate targets systematically / apply SFDIPOT | **`chartering`** skill (SFDIPOT lens) |
 | Generate a risk-driven charter from "what's the worst that could happen" | **`stride-exploratory-testing-nightmare-headline`** skill |
 | Create one or more charters interactively | **`stride-exploratory-testing-charter`** skill |
 | Get unstuck / generate test ideas / apply a cheat sheet or a Tour | **`heuristics`** skill |
 | Know the factors to vary (data, state, sequence, environment) | **`heuristics`** skill (variable catalog) |
 | Decide "is this actually a bug?" / apply consistency oracles | **`oracles`** skill |
+| Is this bug report good enough? / how do I write this up? / how severe is it? | **`bug-advocacy`** skill |
 | Run a full time-boxed session with notes and a debrief | **`session`** skill |
 | Do a quick reconnaissance pass over an unfamiliar feature | **`stride-exploratory-testing-recon`** skill |
 | Run an exploratory session end-to-end (plan and execute) | **`stride-exploratory-testing-explore`** skill |
+| Test alongside a human who is driving the app themselves | **`stride-exploratory-testing-pair`** skill |
 | Close out a session and produce a structured debrief | **`stride-exploratory-testing-debrief`** skill |
+| Turn a session's findings into regression checks / "make sure this bug can't come back" | **`stride-exploratory-testing-harden`** skill |
 
 Two subagents support the command-derived skills rather than being activated directly: **`charter-generator`** (turns a target + risk into candidate charters) and **`explorer`** (executes a charter's exploration loop and reports findings). Reach for the skills above; they dispatch these agents for you.
 
@@ -97,7 +100,7 @@ The richer models the sub-skills provide are **lenses, not laws** — reach for 
 
 - **SBTM** (Session-Based Test Management) — the charter → session → debrief management frame used above.
 - **Tours** — themed walkthroughs (the money tour, the landmark tour, the back-alley tour…) that bias exploration toward a particular kind of risk. Cataloged in `heuristics`.
-- **SFDPOT** (Structure, Function, Data, Platform, Operations, Time) — a coverage heuristic for making sure you looked at the whole product. Cataloged in `chartering`.
+- **SFDIPOT** (Structure, Function, Data, Interfaces, Platform, Operations, Time) — a coverage heuristic for making sure you looked at the whole product. Cataloged in `chartering`.
 
 Use them as idea generators feeding the design/execute/learn/steer loop — never as a script to march through.
 

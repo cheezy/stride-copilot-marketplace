@@ -1,7 +1,7 @@
 {
   "name": "stride-copilot-exploratory-testing",
   "description": "Drive structured, charter-based exploratory testing sessions from GitHub Copilot CLI — plan charters, run timeboxed sessions, apply heuristics and oracles, and capture findings. Copilot port of cheezy/stride-exploratory-testing; pair with cheezy/stride-copilot for task-lifecycle skills.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Jeff Morgan",
     "email": "cheezy@letstango.ca"

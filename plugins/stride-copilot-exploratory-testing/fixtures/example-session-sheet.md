@@ -1,10 +1,14 @@
 # Example session sheet
 
-A worked **SBTM session sheet** for charter #1 from the
-[example charter set](example-charters.md), run against the fictional *ExpenseFlow*
-demo target. It follows the section skeleton from the `session` skill exactly. All
-data is synthetic; `demo.example.com` and `<tenant A>` / `<tenant B>` are
-placeholders standing in for anything real.
+A worked **session sheet** for charter #1 from the
+[example charter set](example-charters.md), run by the `explorer` agent against the
+fictional *ExpenseFlow* demo target. It follows the section skeleton from the
+`session` skill in its **agent-run** form: the session is bounded by a probe budget
+rather than a clock, so the sheet reports counts the agent actually kept instead of
+wall-clock percentages. (A human-run sheet uses `TESTER / DATE / DURATION` plus Task
+Breakdown Metric percentages — see the `session` skill; a human with a clock can
+report those honestly, an agent cannot.) All data is synthetic; `demo.example.com`
+and `<tenant A>` / `<tenant B>` are placeholders standing in for anything real.
 
 ---
 
@@ -14,8 +18,16 @@ CHARTER
   files (and files from another tenant's export) to discover how the parser fails,
   whether it corrupts existing receipts, and whether any row can leak across tenants.
 
-TESTER / DATE / DURATION
-  Sam Rivera / 2026-07-20 / 90 min (time-boxed)
+TESTER / DATE
+  explorer agent (stride-copilot-exploratory-testing) / 2026-07-20
+
+SESSION BUDGET
+  Probe budget: 12 (band 8-20)        Tool-call ceiling: 60
+  Probes attempted: 7 (on-charter 6, off-charter 1)
+  Probes that produced a finding: 5
+  Tool calls used: 34
+  Stopped: charter_quiet (5 of the 12 probes unspent - the budget is a
+    ceiling, not a quota)
 
 AREAS COVERED
   - CSV import screen (demo.example.com, <tenant A> account)
@@ -24,9 +36,8 @@ AREAS COVERED
   - Post-import receipt list and running expense total
   - Import error banner and per-row rejection report
 
-TASK BREAKDOWN METRICS
-  Test:  60%   Bug: 25%   Setup: 15%
-  On-charter: 85%   Off-charter (opportunity): 15%
+HEURISTICS APPLIED
+  Follow the Data, Violate Format, Goldilocks, Change the Model
 
 NOTES
   - Baseline: a clean 40-row CSV imports cleanly; total updates correctly. Good oracle
@@ -34,8 +45,9 @@ NOTES
   - Truncated file (cut mid-row): parser imports the first 39 rows, silently drops the
     partial 40th, no warning. Idea: is a silently-dropped row a data-integrity risk?
     -> filed as QUESTION, needs product intent.
-  - 250 MB file: browser upload spinner ran the full 90s, then a generic "Something
-    went wrong" with no row detail. Setup cost real time; capped further size probes.
+  - 250 MB file: the upload never completed - the request eventually failed with a
+    generic "Something went wrong" and no row detail. This one probe plus its setup
+    cost 9 of the session's 34 tool calls; capped further size probes.
   - UTF-16-encoded file with accented vendor names ("Café Subroute"): names imported as
     mojibake ("CafÃ©"). Oracle = consistency with claims (the UI claims UTF-8 support in
     the help text). -> BUG.
@@ -75,14 +87,20 @@ OFF-CHARTER PARKING LOT
 
 ## How to read this sheet
 
-- **Task Breakdown Metrics** report the *shape* of the time, not precise accounting:
-  most of the box went to actual testing (**Test 60%**), a meaningful chunk to
-  investigating and writing up the two bugs (**Bug 25%**), and the rest to setup
-  (**Setup 15%** — the oversized-file probe ate most of it). **85% on-charter** with a
-  useful **15% off-charter** detour that produced a new candidate charter.
+- **SESSION BUDGET** replaces the human sheet's duration and Task Breakdown Metrics.
+  An agent has no clock and cannot honestly report "Test 60% / Bug 25% / Setup 15%",
+  so it reports what it counted as it went: **7 probes attempted**, **5 of them
+  produced a finding**, **6 on-charter to 1 off-charter**, **34 tool calls**. The
+  shape survives — most of the session served the charter, one detour produced a new
+  candidate charter, and the setup-heavy oversized probe is visible as 9 tool calls
+  spent on a single probe — but nothing here is estimated.
+- **Stopped: charter_quiet** with 5 probes unspent is the point of the budget: it is
+  a ceiling, not a quota. A session that stops because the charter went quiet is
+  complete; one that stops on `probe_budget_exhausted` was budget-bound and there is
+  probably more to find.
 - **BUGS** are oracle-confirmed problems, each with a repro and a *why-wrong* — never
   just "looks off."
 - **QUESTIONS / RISKS** hold things that need a human decision (product intent), which
   are not yet bugs.
 - **OFF-CHARTER PARKING LOT** captures valuable detours as future charters instead of
-  letting them derail this box.
+  letting them derail this session.

@@ -2,8 +2,8 @@
 # Structure smoke test for the stride-copilot-exploratory-testing plugin.
 #
 # Asserts the plugin ships every file the Copilot plugin schema and this
-# plugin's docs require: a valid ROOT manifest, all five core knowledge
-# skills, all five command-derived skills, both .agent.md agents, the three
+# plugin's docs require: a valid ROOT manifest, all six core knowledge
+# skills, all seven command-derived skills, both .agent.md agents, the three
 # README-referenced fixtures, and the root docs. Pure shell + python3 (for
 # JSON) — no network, no jq.
 #
@@ -54,7 +54,7 @@ fi
 
 # --- Core knowledge skills -------------------------------------------------
 
-for skill in stride-exploratory-testing chartering heuristics oracles session; do
+for skill in stride-exploratory-testing chartering heuristics oracles bug-advocacy session; do
   if [ -f "${PLUGIN_ROOT}/skills/${skill}/SKILL.md" ]; then
     ok "skills/${skill}/SKILL.md exists"
   else
@@ -69,7 +69,9 @@ for skill in \
   stride-exploratory-testing-nightmare-headline \
   stride-exploratory-testing-explore \
   stride-exploratory-testing-recon \
-  stride-exploratory-testing-debrief; do
+  stride-exploratory-testing-debrief \
+  stride-exploratory-testing-pair \
+  stride-exploratory-testing-harden; do
   if [ -f "${PLUGIN_ROOT}/skills/${skill}/SKILL.md" ]; then
     ok "skills/${skill}/SKILL.md exists"
   else
@@ -79,10 +81,10 @@ done
 
 # Count only real SKILL.md files (any .gitkeep placeholder is ignored).
 SKILL_COUNT=$(find "${PLUGIN_ROOT}/skills" -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l | tr -d ' ')
-if [ "$SKILL_COUNT" -eq 10 ]; then
-  ok "exactly 10 SKILL.md files present (5 core + 5 command-derived; .gitkeep ignored)"
+if [ "$SKILL_COUNT" -eq 13 ]; then
+  ok "exactly 13 SKILL.md files present (6 core + 7 command-derived; .gitkeep ignored)"
 else
-  nope "expected 10 SKILL.md files, found ${SKILL_COUNT}" ""
+  nope "expected 13 SKILL.md files, found ${SKILL_COUNT}" ""
 fi
 
 # --- Agents (.agent.md extension) ------------------------------------------
