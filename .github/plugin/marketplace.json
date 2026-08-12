@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Marketplace catalog for Stride GitHub Copilot CLI plugins",
-    "version": "1.6.0"
+    "version": "1.7.0"
   },
   "plugins": [
     {
@@ -29,19 +29,19 @@
     },
     {
       "name": "stride-copilot-lite",
-      "description": "Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt — no API calls, no kanban auth.",
-      "version": "0.3.0",
+      "description": "Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt \u2014 no API calls, no kanban auth. New in v0.4.0: the hook layer actually fires on Copilot CLI (before_task, after_task and after_goal were all inert), plus a decision matrix, task enrichment, hook-failure triage, step telemetry, three optional cross-plugin integrations, and the failed-verdict note rule the completion API already enforces. Breaking: the four skill directories were renamed.",
+      "version": "0.4.0",
       "source": "./plugins/stride-copilot-lite"
     },
     {
       "name": "launchdarkly-copilot",
-      "description": "Generate correct, testable, and removable LaunchDarkly feature-flag code from GitHub Copilot — Java server SDK plus the TypeScript SDKs (Node server, client-side JS, React) with scaffolding, flag-removal skills, and an anti-pattern review agent.",
+      "description": "Generate correct, testable, and removable LaunchDarkly feature-flag code from GitHub Copilot \u2014 Java server SDK plus the TypeScript SDKs (Node server, client-side JS, React) with scaffolding, flag-removal skills, and an anti-pattern review agent.",
       "version": "0.2.0",
       "source": "./plugins/launchdarkly-copilot"
     },
     {
       "name": "stride-copilot-exploratory-testing",
-      "description": "Structured, charter-based exploratory testing for GitHub Copilot CLI: plan charters, run timeboxed sessions with named heuristics and oracles, and capture findings — the Copilot port of cheezy/stride-exploratory-testing.",
+      "description": "Structured, charter-based exploratory testing for GitHub Copilot CLI: plan charters, run timeboxed sessions with named heuristics and oracles, and capture findings \u2014 the Copilot port of cheezy/stride-exploratory-testing.",
       "version": "0.2.0",
       "source": "./plugins/stride-copilot-exploratory-testing"
     }

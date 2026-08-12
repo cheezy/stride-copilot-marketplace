@@ -1,12 +1,12 @@
 ---
-name: stride-lite-create-task
-description: Use to turn a user prompt + an optional requirements directory into a single written task markdown file at `<output-dir>/tasks/<slug>.md` (default `docs/implementation/PENDING/tasks/<slug>.md`). The output is rendered with the same per-task markdown template as the `stride-lite-create-goal` skill, never POSTed to any API. Activate when the user asks to create a single Stride-shaped task, write a one-off task markdown file, or generate a task spec from a free-text prompt — optionally with `--requirements-dir <path>` (default `docs/requirements`) or `--output-dir <path>` (default `docs/implementation/PENDING`). Terminal state is the written file; the skill does not push the user toward any follow-up action.
+name: stride-copilot-lite-create-task
+description: Use to turn a user prompt + an optional requirements directory into a single written task markdown file at `<output-dir>/tasks/<slug>.md` (default `docs/implementation/PENDING/tasks/<slug>.md`). The output is rendered with the same per-task markdown template as the `stride-copilot-lite-create-goal` skill, never POSTed to any API. Activate when the user asks to create a single Stride-shaped task, write a one-off task markdown file, or generate a task spec from a free-text prompt — optionally with `--requirements-dir <path>` (default `docs/requirements`) or `--output-dir <path>` (default `docs/implementation/PENDING`). Terminal state is the written file; the skill does not push the user toward any follow-up action.
 skills_version: "1.0"
 ---
 
-# stride-lite-create-task
+# stride-copilot-lite-create-task
 
-Surface skill for the single-task flow. Mirrors the orchestration shape of `stride-lite-create-goal` but produces exactly one markdown file at `<output-dir>/tasks/<slug>.md` from a single dispatch of the `create-decomposer` subagent in `mode=task`.
+Surface skill for the single-task flow. Mirrors the orchestration shape of `stride-copilot-lite-create-goal` but produces exactly one markdown file at `<output-dir>/tasks/<slug>.md` from a single dispatch of the `create-decomposer` subagent in `mode=task`.
 
 ## What this skill does
 
@@ -24,7 +24,7 @@ Every step routes through a `lib/` helper or the `create-decomposer` subagent �
 - **Never writes to `<output-dir>/<slug>/`** (the goal-flow shape). The single-task output lives at `<output-dir>/tasks/<slug>.md` so it can sit alongside any number of goal directories without colliding.
 - **Never overwrites an existing task file.** `resolve_output_path` suffixes `-2`, `-3`, ... on collision.
 - **Never bypasses the lib/ helpers.** Every step uses its designated helper so behavior is testable in isolation.
-- **Never diverges the task template** from the per-task template in `stride-lite-create-goal/SKILL.md`. The two skills MUST render identical task markdown — single-task output and per-task files inside a goal directory should be indistinguishable in shape.
+- **Never diverges the task template** from the per-task template in `stride-copilot-lite-create-goal/SKILL.md`. The two skills MUST render identical task markdown — single-task output and per-task files inside a goal directory should be indistinguishable in shape.
 
 ## Inputs
 
@@ -108,9 +108,9 @@ mkdir -p "$(dirname "$TASK_PATH")"
 
 ### Step 6 — Render and write the task file
 
-Render the task using the **identical** template from `stride-lite-create-goal/SKILL.md` (the per-task `taskN.md` template). Reproduce the same section order and the same `- (none)` rendering for empty lists. Write to `$TASK_PATH`. Use `[ -e ]` defense — the file must not already exist (the resolver guarantees this, but defense in depth is cheap).
+Render the task using the **identical** template from `stride-copilot-lite-create-goal/SKILL.md` (the per-task `taskN.md` template). Reproduce the same section order and the same `- (none)` rendering for empty lists. Write to `$TASK_PATH`. Use `[ -e ]` defense — the file must not already exist (the resolver guarantees this, but defense in depth is cheap).
 
-#### Task template (reproduced verbatim from stride-lite-create-goal)
+#### Task template (reproduced verbatim from stride-copilot-lite-create-goal)
 
 ```markdown
 # <task.title>
@@ -208,10 +208,28 @@ That is the entire output. The skill does not chain into any follow-up.
 
 ## Pitfalls
 
-- **Do not diverge the task template** from the per-task template defined in `stride-lite-create-goal/SKILL.md`. If you find yourself adding a section that doesn't appear in the create-goal task template, stop — make the change in BOTH skills in the same commit.
+- **Do not diverge the task template** from the per-task template defined in `stride-copilot-lite-create-goal/SKILL.md`. If you find yourself adding a section that doesn't appear in the create-goal task template, stop — make the change in BOTH skills in the same commit.
 - **Do not write to `<output-dir>/<slug>/` for single-task mode.** That shape is reserved for goals. The single-task output is always a file at `<output-dir>/tasks/<slug>.md`.
 - **Do not hardcode `docs/implementation/PENDING`.** Always route through `$OUTPUT_DIR` after `parse_args`. The `--output-dir` flag MUST work.
 - **Do not POST to any API.** No `curl https://...`, no Stride client, no other network call. The skill writes one markdown file and prints a summary.
+
+## Red flags — STOP
+
+If you catch yourself thinking any of these, go back to the documented step:
+
+- **"This prompt is really 2–3 tasks — I'll write them all into one file."** No. This skill produces exactly one task file. If the work is genuinely a goal, say so and point the user at `the stride-copilot-lite-create-goal skill` rather than smuggling a decomposition into a single file.
+- **"The file already exists — I'll overwrite it."** No. Resolve a unique path. An existing task file may already carry an Exploration Report, a Review Report or a Completion Summary from a run in progress.
+- **"I'll adjust the template for the single-task case."** No. It is reproduced verbatim from `stride-copilot-lite-create-goal` precisely so single-task output and a goal's `taskN.md` are indistinguishable in shape.
+
+## Rationalization table
+
+| "I'll just…" | Reality | Consequence if you do |
+|---|---|---|
+| "…put three tasks in one file; the user only asked once." | One prompt, one task file. Multi-task work is the goal flow's job. | The workflow drives one file as one task, so two thirds of the work is never explored, reviewed or summarized. |
+| "…diverge the template slightly; this is a standalone file." | The never-diverge rule is a hard cross-skill contract asserted by `test/smoke.sh`. | Task markdown whose shape depends on which skill made it, which the workflow then reads inconsistently. |
+| "…overwrite the existing file; it's probably stale." | The resolver suffixes rather than overwrites, deliberately. | You destroy a task file that may hold a completed run's Review Report and Completion Summary. |
+| "…omit the metadata line for a one-off task." | The decision matrix reads complexity from that line. | The task always resolves to the `full` branch — two dispatches and two hook runs for a one-line fix. |
+| "…leave `## Key files` empty rather than `- (none)`." | An absent section and an empty one mean different things to the matrix. | An absent section routes to `full`; an empty one routes to `skip-all`. Guessing gets you the wrong one. |
 
 ## Edge cases
 

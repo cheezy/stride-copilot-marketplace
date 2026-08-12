@@ -1,12 +1,12 @@
 ---
-name: stride-lite-create-goal
+name: stride-copilot-lite-create-goal
 description: Use to turn a user prompt + an optional requirements directory into a written goal directory under `docs/implementation/PENDING/<slug>/` containing one `goal.md` and one `taskN.md` per child task — rendered as readable markdown that mirrors the Stride goal/task field contracts, never POSTed to any API. Activate when the user asks to create a Stride-shaped goal, decompose a prompt into a goal, write a goal directory, or break an initiative into Stride-shaped tasks on disk — optionally with `--requirements-dir <path>` (default `docs/requirements`) or `--output-dir <path>` (default `docs/implementation/PENDING`). Terminal state is the written files; the skill does not push the user toward any follow-up action.
 skills_version: "1.0"
 ---
 
-# stride-lite-create-goal
+# stride-copilot-lite-create-goal
 
-Surface skill that drives the end-to-end create-goal flow for the stride-lite plugin: parse the invocation, load any requirements text, dispatch the `create-decomposer` subagent in `mode=goal`, slugify, resolve a unique output directory, and write a `goal.md` plus one `taskN.md` per child task. The output is plain markdown intended for human review — this skill never calls the Stride API.
+Surface skill that drives the end-to-end create-goal flow for the stride-copilot-lite plugin: parse the invocation, load any requirements text, dispatch the `create-decomposer` subagent in `mode=goal`, slugify, resolve a unique output directory, and write a `goal.md` plus one `taskN.md` per child task. The output is plain markdown intended for human review — this skill never calls the Stride API.
 
 ## What this skill does
 
@@ -275,6 +275,26 @@ Render-time rules:
 - **Do not omit required fields from the markdown templates.** Render every field on the contract — empty values are explicit (`(none)`); silent omission is not.
 - **Do not overwrite an existing goal directory.** `resolve_output_path` is the only correct way to pick `$GOAL_DIR`. Direct `mkdir docs/implementation/PENDING/$slug` bypasses the suffix logic.
 - **Do not POST to any API.** No `curl https://...`, no Stride API client, no other network call. The skill writes to disk and prints a summary. That is its entire side effect.
+
+## Red flags — STOP
+
+If you catch yourself thinking any of these, go back to the documented step:
+
+- **"The decomposer returned 9 tasks and the ninth is tiny — I'll fold it into task 8."** No. The 1–8 cap is the decomposer's own hard rule and this skill rejects output that violates it rather than repairing it. Folding produces a `taskN.md` carrying two unrelated acceptance-criteria sets under one complexity line, which the workflow's decision matrix then resolves for half the work the file contains.
+- **"The output directory already exists — I'll write into it."** No. Resolve a unique path and never overwrite. Someone else's goal directory is not a scratch space.
+- **"This task's template is missing a section the prompt didn't cover — I'll drop the heading."** No. Render every heading, with `- (none)` for empty values. A dropped heading is one the enricher will neither fill nor protect, and one the matrix cannot read.
+- **"I'll improve the per-task template while I'm here."** No, not in this file alone. The template is reproduced verbatim in `stride-copilot-lite-create-task` and any change must land in both in the same commit.
+
+## Rationalization table
+
+| "I'll just…" | Reality | Consequence if you do |
+|---|---|---|
+| "…cap the decomposition myself at 8 by merging the last two." | The cap is enforced by rejecting the output, not by repairing it. | A task file with two tasks' worth of scope and one complexity line; the workflow sizes it for half the work. |
+| "…tweak the task template here; create-task can catch up later." | AGENTS.md makes identical rendering a hard cross-skill rule and `test/smoke.sh` asserts it. | The two skills produce different task markdown, and which one you get depends on how the goal was created. |
+| "…change a heading name; it reads better." | The heading set is a contract with the enricher, the decision matrix and the fixtures. | The matrix stops finding `## Key files`, every task resolves to `full`, and the enricher neither fills nor protects the renamed section. |
+| "…drop the metadata line; the headings carry the real content." | That blockquote is where the decision matrix reads complexity. | Every task resolves to the `full` branch and the matrix silently stops saving anything. |
+| "…write into the existing output directory rather than suffixing." | The resolver's job is to never overwrite. | Someone's earlier goal is clobbered, and nothing recorded that it existed. |
+| "…skip the `- (none)` placeholders for sections the prompt didn't cover." | Empty values render as `(none)`; the section still appears. | A missing heading reads as "absent" rather than "empty", which routes the task to a different branch than intended. |
 
 ## Edge cases
 
