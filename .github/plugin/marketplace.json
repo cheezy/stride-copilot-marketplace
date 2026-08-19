@@ -12,7 +12,7 @@
     {
       "name": "stride-copilot",
       "description": "Task lifecycle skills and custom agents for Stride kanban: claiming, completing, and creating tasks and goals for AI agents in GitHub Copilot CLI.",
-      "version": "2.33.0",
+      "version": "2.34.0",
       "source": "./plugins/stride-copilot"
     },
     {
@@ -30,7 +30,7 @@
     {
       "name": "stride-copilot-lite",
       "description": "Produce Stride-shaped goal and task markdown documents on disk from a free-text prompt \u2014 no API calls, no kanban auth. New in v0.4.0: the hook layer actually fires on Copilot CLI (before_task, after_task and after_goal were all inert), plus a decision matrix, task enrichment, hook-failure triage, step telemetry, three optional cross-plugin integrations, and the failed-verdict note rule the completion API already enforces. Breaking: the four skill directories were renamed.",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "source": "./plugins/stride-copilot-lite"
     },
     {
