@@ -51,7 +51,15 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
    node -e "const m=JSON.parse(require('fs').readFileSync('.github/plugin/marketplace.json')); const p=m.plugins.find(x=>x.name==='stride-copilot'); const v=JSON.parse(require('fs').readFileSync('plugins/stride-copilot/plugin.json')).version; require('fs').accessSync('plugins/stride-copilot/plugin.json'); if(p.version!==v) throw new Error('version mismatch: entry '+p.version+' != vendored '+v); console.log('synced at', v)"
    ```
 
-5. **Scan for secrets**, then commit and push:
+5. **Check the fleet against the port canon** — this is what stops a stale vendored copy shipping:
+
+   ```bash
+   bash ../stride/scripts/check-port-canon.sh
+   ```
+
+   Exit `0` is clean. Exit `1` lists the drift, and a line naming either copy vendored from this repo means that copy is behind its source port — go back to step 1 and re-vendor it rather than editing the vendored tree, which is the whole reason the copies are copies. A line naming a *port* instead is that port's to fix by placing the anchor beside its own statement of the rule — not by editing an `applies_to` row in the canon, which would only record that the port does not owe what it does. Exit `2` means no verdict was possible: the run proved nothing and its quiet is not a pass. It sits here, ahead of the commit, because a red result at this point costs one re-run of step 1 and nothing else.
+
+6. **Scan for secrets**, then commit and push:
 
    ```bash
    git grep -nI 'BEGIN [A-Z ]*PRIVATE KEY\|ghp_[A-Za-z0-9]\{20,\}\|github_pat_[A-Za-z0-9_]\{20,\}\|stride_dev_[A-Za-z0-9+/=]\{30,\}\|stride_prod_[A-Za-z0-9+/=]\{30,\}' $(git rev-list --all)   # expect empty
@@ -62,7 +70,7 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 
    **Expect literally zero output.** Any hit is a real finding — investigate before pushing. See [About the secret-scan pattern](#about-the-secret-scan-pattern) for why each clause is shaped the way it is; do not simplify it without re-reading that section.
 
-6. **Tag the catalog** with the next free number in *this repo's* tag series — **not** the plugin's `X.Y.Z`, and **not** `metadata.version` (see [Three version numbers to keep straight](#three-version-numbers-to-keep-straight)). Writing `vA.B.C` for that catalog tag:
+7. **Tag the catalog** with the next free number in *this repo's* tag series — **not** the plugin's `X.Y.Z`, and **not** `metadata.version` (see [Three version numbers to keep straight](#three-version-numbers-to-keep-straight)). Writing `vA.B.C` for that catalog tag:
 
    ```bash
    git tag --list --sort=-v:refname | head -1   # highest existing catalog tag
@@ -70,7 +78,7 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
    git push origin vA.B.C
    ```
 
-7. **Cut the GitHub release** for that tag:
+8. **Cut the GitHub release** for that tag:
 
    ```bash
    gh release create vA.B.C --title "vA.B.C" --notes "Sync stride-copilot to X.Y.Z"
@@ -78,9 +86,9 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 
    The tag is `vA.B.C` (this repo's series); the plugin version `X.Y.Z` belongs in the notes, describing *what* the release syncs.
 
-   **Publishing a release requires the user's explicit authorization in that turn.** It creates a public artifact on a public repository, and authorization to perform the sync — or to run any earlier step here — does not carry over to this one. If you have not been told to release in the current turn, stop after step 6 and ask.
+   **Publishing a release requires the user's explicit authorization in that turn.** It creates a public artifact on a public repository, and authorization to perform the sync — or to run any earlier step here — does not carry over to this one. If you have not been told to release in the current turn, stop after step 7 and ask.
 
-   A sync that stops before these two steps leaves the catalog pushed but unreleased. That is the gap this section exists to close, so treat steps 6 and 7 as part of the release, not as optional follow-up.
+   A sync that stops before these two steps leaves the catalog pushed but unreleased. That is the gap this section exists to close, so treat steps 7 and 8 as part of the release, not as optional follow-up.
 
 ## Checklist
 
@@ -88,6 +96,7 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 - [ ] `marketplace.json` plugin entry `version` == vendored `plugin.json` version
 - [ ] README `Plugins` table version updated to match
 - [ ] Verify command prints `synced at X.Y.Z`
+- [ ] Port-canon drift check run; neither copy vendored from this repo appears in its output
 - [ ] Secret scan returns zero output, committed and pushed
 - [ ] Catalog tagged `vA.B.C` — next free number in this repo's series, not the plugin's `X.Y.Z` — and the tag pushed
 - [ ] GitHub release cut for `vA.B.C`, with the user's explicit authorization in that turn
@@ -127,7 +136,13 @@ Assume the new plugin `<name>` has a tagged release `vX.Y.Z`. From the repositor
    node -e "const m=JSON.parse(require('fs').readFileSync('.github/plugin/marketplace.json')); m.plugins.forEach(p=>{const v=JSON.parse(require('fs').readFileSync(p.source.replace(/^\.\//,'')+'/plugin.json')).version; if(p.version!==v) throw new Error(p.name+' entry '+p.version+' != vendored '+v); require('fs').accessSync(p.source.replace(/^\.\//,'')+'/plugin.json')}); console.log('all '+m.plugins.length+' plugins resolve and versions match')"
    ```
 
-6. **Scan for secrets**, then commit and push:
+6. **Check the fleet against the port canon**, exactly as in the [Sync steps](#sync-steps). A newly vendored copy is a copy from its first commit, not from its first re-sync, so it answers to the same check — and catching a stale one here costs a re-run of step 1 rather than a follow-up release.
+
+   ```bash
+   bash ../stride/scripts/check-port-canon.sh
+   ```
+
+7. **Scan for secrets**, then commit and push:
 
    ```bash
    git grep -nI 'BEGIN [A-Z ]*PRIVATE KEY\|ghp_[A-Za-z0-9]\{20,\}\|github_pat_[A-Za-z0-9_]\{20,\}\|stride_dev_[A-Za-z0-9+/=]\{30,\}\|stride_prod_[A-Za-z0-9+/=]\{30,\}' $(git rev-list --all)   # expect empty
@@ -145,6 +160,7 @@ Assume the new plugin `<name>` has a tagged release `vX.Y.Z`. From the repositor
 - [ ] `metadata.version` bumped (minor)
 - [ ] README `Plugins` table row added
 - [ ] Verify command prints `all N plugins resolve and versions match`
+- [ ] Port-canon drift check run; the new vendored copy does not appear in its output
 - [ ] Secret scan returns zero output, committed and pushed
 
 ## About the secret-scan pattern
