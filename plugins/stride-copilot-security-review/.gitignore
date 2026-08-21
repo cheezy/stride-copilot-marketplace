@@ -13,3 +13,6 @@
 
 # Eval runner output (scripts/run_eval.sh)
 logs/
+
+# Stride agent-local state (never commit — holds a live API token)
+.stride_auth.md

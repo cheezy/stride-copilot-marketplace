@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-08-21
+
+Housekeeping. The `/security-review` surface, the reviewer agent, and the finding schema are unchanged.
+
+### Security
+
+- **`.stride_auth.md` is ignored.** It holds a live Stride API token and lands in any repository where the agent workflow runs, this one included. Nothing had ever committed it; the protection was luck rather than a rule, which is a poor arrangement in a plugin that exists to catch exactly this.
+
 ## [0.4.1] - 2026-07-23
 
 ### Fixed — the agent-dispatch-failure exit-code contract now matches the procedure (G377: D173)
@@ -60,6 +68,7 @@ Eval coverage adds a considerations lane to the TAP runner: paired positive-cont
 - The reference CI workflow (`.github/workflows/security-review.yml`) and the eval runner (`scripts/run_eval.sh`) currently install and invoke the Claude Code CLI; both files carry `TODO(copilot-port)` headers documenting the replacement targets for when Copilot CLI ships a settled non-interactive batch mode.
 - The SARIF schema validator example in `schema/README.md` also references `claude -p` and is annotated with a `TODO(copilot-port)` for the same reason.
 
+[0.4.2]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.4.2
 [0.4.1]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.4.1
 [0.4.0]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.4.0
 [0.3.0]: https://github.com/cheezy/stride-copilot-security-review/releases/tag/v0.3.0

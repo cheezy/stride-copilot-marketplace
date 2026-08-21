@@ -18,13 +18,13 @@
     {
       "name": "stride-copilot-ideation",
       "description": "Turn an idea into shipped Stride tasks from GitHub Copilot CLI: an interactive ideation session that produces a committed requirements doc, plus a stridify step that decomposes it into a Stride batch and posts it to the API.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "source": "./plugins/stride-copilot-ideation"
     },
     {
       "name": "stride-copilot-security-review",
       "description": "AI-powered security review for code changes via the security-review-essentials skill: multi-language semantic vulnerability detection with SARIF output and CI severity gating.",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "source": "./plugins/stride-copilot-security-review"
     },
     {

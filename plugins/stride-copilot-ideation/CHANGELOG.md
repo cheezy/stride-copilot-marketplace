@@ -4,6 +4,14 @@ All notable changes to the `stride-copilot-ideation` plugin are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-08-21
+
+A README correction. No change to the skills, the agents, or the plugin manifest surface.
+
+### Fixed
+
+- **The default profile was documented as "matches upstream v0.3.0 behavior".** That is a pointer into another plugin's history rather than a description, and it decays with every release that moves past it. The `lean` default is now stated in its own terms: the shared core only — the seven gated sections plus the mandatory framing checkpoint, premortem, and challenge gate — without the profile-specific forcing questions or optional sections the other three profiles add.
+
 ## [0.4.0] - 2026-07-04
 
 Hardens the `stride-ideation-stridify` decomposition-and-ship pipeline around the Stride review queue's **five per-task scored fields** — `acceptance_criteria`, `testing_strategy`, `security_considerations`, `pitfalls`, `patterns_to_follow` — so generated tasks score well, are attributed to the creating agent, and are caught before the API rejects them. Also completes the port of the core round-loop protocol to the Copilot selection primitive. All changes are additive and behavior-compatible.
