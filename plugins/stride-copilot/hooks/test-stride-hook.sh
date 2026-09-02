@@ -4152,6 +4152,1248 @@ STRIDE
 fi
 
 # ============================================================
+# Test Group 21: W2147 loop state recorded on completion
+# ============================================================
+# The Stop gate cannot refuse an action it has no evidence for. These cover the
+# file that becomes that evidence: written when a completion SUCCEEDS, cleared
+# when the next claim proves it was followed, and never written for a failure.
+# Mirrors the reference plugin's Test Group 33 case-for-case, plus 21w, which
+# asserts the cross-half byte identity AC5 requires.
+echo ""
+echo "=== Test Group 21: W2147 loop state on completion (bash) ==="
+
+if ! command -v jq > /dev/null 2>&1; then
+  echo "  SKIP: jq not available — Group 21 requires jq"
+else
+  G21_URL="https://www.stridelikeaboss.com"
+  G21_STATE=".stride/.loop-state.json"
+
+  # Build a hook-input envelope. $1=session_id $2=command $3=stdout payload
+  g21_input() {
+    jq -nc --arg s "$1" --arg c "$2" --arg r "$3" \
+      '{session_id:$s,tool_input:{command:$c},tool_response:{stdout:$r}}'
+  }
+
+  # Fresh project dir with only the sections under test, so nothing else runs.
+  g21_proj() {
+    local _d="$TMPDIR_TEST/w2147-$1"
+    rm -rf "$_d"; mkdir -p "$_d/.stride"
+    printf '## before_doing\n```bash\n```\n\n## before_review\n```bash\n```\n' > "$_d/.stride.md"
+    printf '%s' "$_d"
+  }
+
+  G21_OK='{"data":{"id":99,"identifier":"W2147","needs_review":false},"hooks":[{"name":"before_review"}]}'
+  G21_COMPLETE_CMD="curl -sS -X PATCH $G21_URL/api/tasks/99/complete -d @payload.json | tee r.json"
+  G21_CLAIM_CMD="curl -sS -X POST $G21_URL/api/tasks/claim -d @c.json | tee r.json"
+
+  # 21a: a successful completion writes the file with the right identifier.
+  G21_D=$(g21_proj a)
+  g21_input "sess-abc" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21a: a successful completion records the identifier" \
+    "W2147" "$(jq -r '.identifier' "$G21_D/$G21_STATE" 2>/dev/null)"
+  assert_eq "21a: it records needs_review from the response" \
+    "false" "$(jq -r '.needs_review' "$G21_D/$G21_STATE" 2>/dev/null)"
+  assert_eq "21a: it records the session id" \
+    "sess-abc" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+  assert_eq "21a: completed_at is an ISO8601 Z timestamp" "ok" \
+    "$(jq -r 'if (.completed_at // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") then "ok" else "no" end' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21b: needs_review=true is recorded VERBATIM, and as a JSON boolean rather
+  # than the string "true" — the gate branches on it.
+  G21_D=$(g21_proj b)
+  g21_input "s" "$G21_COMPLETE_CMD" \
+    '{"data":{"id":99,"identifier":"W555","needs_review":true},"hooks":[{"name":"before_review"}]}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21b: needs_review=true is recorded verbatim" \
+    "true" "$(jq -r '.needs_review' "$G21_D/$G21_STATE" 2>/dev/null)"
+  assert_eq "21b: needs_review is a boolean, not a string" \
+    "boolean" "$(jq -r '.needs_review | type' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21c: the session id falls back to CLAUDE_SESSION_ID when the input omits it.
+  G21_D=$(g21_proj c)
+  jq -nc --arg c "$G21_COMPLETE_CMD" --arg r "$G21_OK" \
+    '{tool_input:{command:$c},tool_response:{stdout:$r}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" CLAUDE_SESSION_ID="env-sess" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21c: the session id falls back to CLAUDE_SESSION_ID" \
+    "env-sess" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21d: with no session id anywhere it degrades to "unknown" rather than
+  # dropping the record — the identifier is the field the gate needs. This is
+  # the ORDINARY case on this runtime: Copilot's documented hook payload has no
+  # session field, so the attempt-then-degrade chain exists to keep the two
+  # halves identical rather than because a session id is expected today.
+  G21_D=$(g21_proj d)
+  jq -nc --arg c "$G21_COMPLETE_CMD" --arg r "$G21_OK" \
+    '{tool_input:{command:$c},tool_response:{stdout:$r}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" CLAUDE_SESSION_ID="" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21d: an absent session id degrades to unknown" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21e: a session id that is not identifier-shaped is refused, not sanitised.
+  G21_D=$(g21_proj e)
+  g21_input 'not a/session id' "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21e: a non-identifier-shaped session id degrades to unknown" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21f: a 422 does NOT write the file. Every non-success body the API emits
+  # lacks .data, which is the discriminator — curl has no -f here, so the error
+  # body lands on stdout exactly like a success body would.
+  G21_D=$(g21_proj f)
+  g21_input "s" "$G21_COMPLETE_CMD" '{"errors":{"completion_summary":["can'"'"'t be blank"]}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21f: a 422 completion must not write the loop state"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21f: a 422 completion does not write the loop state"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21g: THE REGRESSION GUARD for AC4. extract_response_payload is
+  # canonical-file-first (D118) and .stride/.last-api-response.json survives
+  # across calls, so a build on it as the Tier-1 source would resolve the
+  # previous CLAIM payload here — which carries both fields — and record a
+  # completion that never happened. A naive implementation passes 21f and
+  # fails this.
+  G21_D=$(g21_proj g)
+  cat > "$G21_D/.stride/.last-api-response.json" << 'G21STALE'
+{"data":{"id":99,"identifier":"W9999","needs_review":true},"hook":{"name":"before_doing"}}
+G21STALE
+  g21_input "s" "$G21_COMPLETE_CMD" '{"errors":{"base":["unprocessable"]}, TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21g: a truncated 422 must not inherit the previous claim's payload"
+    echo "    wrote: $(cat "$G21_D/$G21_STATE")"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21g: a truncated 422 does not inherit the previous claim's payload"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21h: the other side of 21g — a harness-truncated SUCCESS still records, via
+  # the canonical snapshot, but only because it demonstrably belongs to THIS
+  # completion (hooks is an array, and the task id matches the routed id).
+  G21_D=$(g21_proj h)
+  cat > "$G21_D/.stride/.last-api-response.json" << 'G21FRESH'
+{"data":{"id":99,"identifier":"W777","needs_review":false},"hooks":[{"name":"before_review"}]}
+G21FRESH
+  g21_input "s" "$G21_COMPLETE_CMD" '{"data":{"identifier":"W7 TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21h: a truncated success recovers from the matching snapshot" \
+    "W777" "$(jq -r '.identifier' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21i: and that recovery refuses a snapshot belonging to a DIFFERENT task.
+  G21_D=$(g21_proj i)
+  cat > "$G21_D/.stride/.last-api-response.json" << 'G21OTHER'
+{"data":{"id":12345,"identifier":"W_OTHER","needs_review":false},"hooks":[{"name":"before_review"}]}
+G21OTHER
+  g21_input "s" "$G21_COMPLETE_CMD" '{"data": TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21i: recovery must refuse a snapshot for another task id"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21i: recovery refuses a snapshot for another task id"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21j: a claim clears a stale record. This is the half that makes the gate
+  # correct — a leftover from the PREVIOUS task would otherwise fire it on work
+  # that is already done.
+  G21_D=$(g21_proj j)
+  echo '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' \
+    > "$G21_D/$G21_STATE"
+  g21_input "s" "$G21_CLAIM_CMD" \
+    '{"data":{"id":99,"identifier":"W1"},"hook":{"name":"before_doing"}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21j: a claim must clear the previous completion's loop state"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21j: a claim clears the previous completion's loop state"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21k: atomicity, from both ends. The writer stages a temp in the destination
+  # directory and renames, so a killed hook can leave no partial file — assert
+  # no temp survives a success, and assert structurally that the writer never
+  # redirects straight at the destination. The `== 1` mktemp assertion doubles
+  # as the anti-vacuity guard: an awk range that matched nothing would make the
+  # `== 0` assertion above pass for the wrong reason.
+  G21_D=$(g21_proj k)
+  g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21k: no temp file survives a successful write" \
+    "0" "$(find "$G21_D/.stride" -name 'loop-state.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
+  assert_eq "21k: the writer renames into place rather than redirecting at it" \
+    "0" "$(awk '/^write_loop_state\(\)/,/^}/' "$HOOK_SCRIPT" | grep -c '> *"\$LOOP_STATE_FILE"' | tr -d ' ')"
+  assert_eq "21k: the writer stages its temp inside the destination directory" \
+    "1" "$(awk '/^write_loop_state\(\)/,/^}/' "$HOOK_SCRIPT" | grep -c 'mktemp "\$PROJECT_DIR/.stride/loop-state' | tr -d ' ')"
+
+  # 21l: the file carries exactly the four documented keys and nothing else —
+  # never the response body, task free text, or the Bearer token that rides in
+  # the same hook input the session id is read from.
+  G21_D=$(g21_proj l)
+  g21_input "s" \
+    "curl -sS -X PATCH $G21_URL/api/tasks/99/complete -H 'Authorization: Bearer stride_dev_SECRETVALUE' -d @p.json | tee r.json" \
+    "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21l: the file carries exactly the four documented keys" \
+    "completed_at identifier needs_review session_id" \
+    "$(jq -r 'keys_unsorted | sort | join(" ")' "$G21_D/$G21_STATE" 2>/dev/null)"
+  if grep -q 'SECRETVALUE\|Bearer' "$G21_D/$G21_STATE" 2>/dev/null; then
+    echo -e "  ${RED}FAIL${RESET}: 21l: the loop state must never carry the Bearer token"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21l: the loop state never carries the Bearer token"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21m: an unwritable .stride/ is logged and swallowed. The loop state is a
+  # gate input, not a correctness dependency — it must never fail the completion.
+  G21_D=$(g21_proj m)
+  chmod 500 "$G21_D/.stride" 2>/dev/null
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  G21_RC=$?
+  chmod 700 "$G21_D/.stride" 2>/dev/null
+  assert_exit "21m: an unwritable .stride does not fail the completion" 0 "$G21_RC"
+  # The pitfall is "log and continue", so the failure must be announced rather
+  # than swallowed silently — on stderr, never stdout, which carries the one
+  # JSON document the harness parses.
+  assert_contains "21m: an unwritable .stride is announced on stderr" \
+    "loop state" "$G21_ERR"
+
+  # 21n: the full claim -> complete -> claim cycle, which is the lifecycle the
+  # gate actually observes. Asserted as ONE triple rather than three separate
+  # assertions: split up, the middle one could be quietly weakened while the
+  # other two still passed.
+  G21_D=$(g21_proj n)
+  g21_input "s" "$G21_CLAIM_CMD" '{"data":{"id":99,"identifier":"W2147"},"hook":{"name":"before_doing"}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  G21_AFTER_CLAIM=$([ -f "$G21_D/$G21_STATE" ] && echo present || echo absent)
+  g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  G21_AFTER_COMPLETE=$([ -f "$G21_D/$G21_STATE" ] && echo present || echo absent)
+  g21_input "s" "$G21_CLAIM_CMD" '{"data":{"id":100,"identifier":"W2148"},"hook":{"name":"before_doing"}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  G21_AFTER_NEXT=$([ -f "$G21_D/$G21_STATE" ] && echo present || echo absent)
+  assert_eq "21n: claim -> complete -> claim leaves the state absent/present/absent" \
+    "absent present absent" "$G21_AFTER_CLAIM $G21_AFTER_COMPLETE $G21_AFTER_NEXT"
+
+  # 21o: the clear is UNCONDITIONAL, including on a FAILED claim, and this case
+  # is why. The claim that fails most often is the one against an empty ready
+  # queue — how essentially every session ends. Preserving the record there
+  # would make it byte-identical to one left by an agent that completed and
+  # never claimed at all, and a gate must refuse in the second case but not the
+  # first.
+  G21_D=$(g21_proj o)
+  echo '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' \
+    > "$G21_D/$G21_STATE"
+  g21_input "s" "$G21_CLAIM_CMD" '{"errors":{"base":["no task available"]}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21o: an empty-queue claim must still clear (no ambiguous record)"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21o: an empty-queue claim still clears (no ambiguous record)"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21p: and a claim whose payload cannot be PARSED still clears. On this port
+  # that is a real risk rather than a formality: the sibling artefact clears sit
+  # inside the caching block's `try`, whose ConvertFrom-Json throws on exactly
+  # this input, so a loop-state clear placed beside them would be skipped here.
+  G21_D=$(g21_proj p)
+  echo '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' \
+    > "$G21_D/$G21_STATE"
+  g21_input "s" "$G21_CLAIM_CMD" '{"data":{"id":9 TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21p: an unparsable claim must still clear (safe direction)"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21p: an unparsable claim still clears (safe direction)"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21q: a completion carrying NO tool_response at all. Parity with the ps1
+  # half, where Set-StrictMode makes an absent property a terminating error;
+  # the bash half must be equally unbothered.
+  G21_D=$(g21_proj q)
+  G21_RC=0
+  jq -nc --arg c "$G21_COMPLETE_CMD" '{session_id:"s",tool_input:{command:$c}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1 || G21_RC=$?
+  assert_exit "21q: an absent tool_response does not fail the hook" 0 "$G21_RC"
+  # The diagnostic channel must stay QUIET here: there was no body at all, so
+  # announcing a parse failure would claim something that never happened, and a
+  # channel that cries wolf is one an operator learns to ignore.
+  G21_ERR=$(jq -nc --arg c "$G21_COMPLETE_CMD" '{session_id:"s",tool_input:{command:$c}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  if echo "$G21_ERR" | grep -q 'unparsable'; then
+    echo -e "  ${RED}FAIL${RESET}: 21q: an absent body must not be announced as unparsable"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21q: an absent body is not announced as unparsable"
+    PASS=$((PASS + 1))
+  fi
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21q: an absent tool_response must write no loop state"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21q: an absent tool_response writes no loop state"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21r: the charset gate must agree with the PowerShell twin, and the one
+  # input where the two shells can silently disagree is a TRAILING newline:
+  # bash reads both values through `$( )`, which strips them, so the ps1 half
+  # normalises before validating rather than refusing. An INTERIOR newline is
+  # refused by both.
+  #
+  # $'...' (ANSI-C quoting), NOT "$(printf 'abc\n')": command substitution
+  # strips the trailing newline before it reaches the fixture, so the latter
+  # spelling would assert the stripping behaviour against an input that never
+  # contained a newline — the same `$( )` stripping this contract is about,
+  # turned back on the test.
+  G21_D=$(g21_proj r)
+  G21_NL=$'abc\n'
+  g21_input "$G21_NL" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21r: a trailing newline in the session id is stripped, not refused" \
+    "abc" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+  # CRLF must ALSO agree: bash's `$( )` strips the LF and leaves the CR, which
+  # the charset gate then refuses, so the ps1 half strips LF only for the same
+  # result.
+  G21_D=$(g21_proj r3)
+  G21_CRLF=$'abc\r\n'
+  g21_input "$G21_CRLF" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21r: a trailing CRLF in the session id is refused" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+  G21_D=$(g21_proj r2)
+  g21_input "$(printf 'a\nb')" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21r: an interior newline in the session id is refused" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21s: testing_strategy names concurrent sessions in one checkout as an edge
+  # case. The design answer is that each writer stages a uniquely named temp
+  # and renames, so the loser of the race is overwritten rather than
+  # interleaved — assert the observable consequence: exactly one well-formed
+  # file, one of the two identifiers, and no temp left behind by either.
+  G21_D=$(g21_proj s)
+  g21_input "s" "$G21_COMPLETE_CMD" \
+    '{"data":{"id":99,"identifier":"W_AAA","needs_review":false},"hooks":[{"name":"before_review"}]}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1 &
+  g21_input "s" "$G21_COMPLETE_CMD" \
+    '{"data":{"id":99,"identifier":"W_BBB","needs_review":false},"hooks":[{"name":"before_review"}]}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1 &
+  wait
+  G21_CONC=$(jq -r '.identifier' "$G21_D/$G21_STATE" 2>/dev/null)
+  case "$G21_CONC" in
+    W_AAA|W_BBB)
+      echo -e "  ${GREEN}PASS${RESET}: 21s: concurrent completions leave one well-formed record"
+      PASS=$((PASS + 1)) ;;
+    *)
+      echo -e "  ${RED}FAIL${RESET}: 21s: concurrent completions must leave one well-formed record"
+      echo "    actual: $G21_CONC"
+      FAIL=$((FAIL + 1)) ;;
+  esac
+  assert_eq "21s: neither concurrent writer leaves a temp behind" \
+    "0" "$(find "$G21_D/.stride" -name 'loop-state.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
+
+  # 21t: a clear that FAILS must be announced. The write path reports all three
+  # of its failure modes, so an operator would otherwise be told when a record
+  # could not be WRITTEN but never when one could not be CLEARED — the
+  # direction the design itself calls dangerous, because the leftover record is
+  # exactly what makes a gate fire on work that is already done.
+  G21_D=$(g21_proj t)
+  g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  chmod 555 "$G21_D/.stride" 2>/dev/null
+  G21_ERR=$(g21_input "s" "$G21_CLAIM_CMD" \
+    '{"data":{"id":902,"identifier":"W2902","needs_review":false},"hook":{"name":"before_doing"}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  G21_RC=$?
+  chmod 755 "$G21_D/.stride" 2>/dev/null
+  assert_exit "21t: an unclearable loop state does not fail the claim" 0 "$G21_RC"
+  assert_contains "21t: an unclearable loop state is announced on stderr" \
+    "could not clear the loop state" "$G21_ERR"
+
+  # 21u: a destination that is not a regular file is refused outright. `mv` onto
+  # a DIRECTORY succeeds by relocating the temp INSIDE it, so the writer's own
+  # failure branch never runs: the record lands where no reader looks and the
+  # temp survives indefinitely. The guard exists because mv's success is the
+  # wrong signal here.
+  G21_D=$(g21_proj u)
+  mkdir -p "$G21_D/$G21_STATE"
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  G21_RC=$?
+  assert_exit "21u: a non-regular-file destination does not fail the completion" 0 "$G21_RC"
+  assert_contains "21u: a non-regular-file destination is announced on stderr" \
+    "not a regular file" "$G21_ERR"
+  assert_eq "21u: and no temp is relocated inside it" \
+    "0" "$(find "$G21_D/$G21_STATE" -name 'loop-state.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
+
+  # 21v: an UNPARSABLE completion body is announced, because the completion may
+  # have succeeded server-side with only the harness's copy cut — evidence lost,
+  # indistinguishable from "nothing to record" unless said. A plain 422 stays
+  # QUIET: it legitimately records nothing, and announcing every failed
+  # completion would be noise that trains an operator to ignore the channel.
+  G21_D=$(g21_proj v)
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" '{"data":{"id":99,"ident TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  assert_contains "21v: an unparsable completion body is announced" \
+    "unparsable" "$G21_ERR"
+  # A bare `false` is well-formed JSON, so it must NOT be announced as a parse
+  # failure — the reason the test is `jq empty` and not `jq -e .`, whose exit
+  # status comes from the VALUE rather than from whether it parsed.
+  G21_D=$(g21_proj v3)
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" 'false' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  if echo "$G21_ERR" | grep -q 'unparsable'; then
+    echo -e "  ${RED}FAIL${RESET}: 21v: a well-formed scalar body must not be announced as unparsable"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21v: a well-formed scalar body is not announced as unparsable"
+    PASS=$((PASS + 1))
+  fi
+  G21_D=$(g21_proj v2)
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" '{"errors":{"base":["bad"]}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  if echo "$G21_ERR" | grep -q 'unparsable'; then
+    echo -e "  ${RED}FAIL${RESET}: 21v: a plain 422 must not be announced as unparsable"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21v: a plain 422 records nothing and stays quiet"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21w: AC5 — "both halves produce a byte-identical record" — asserted
+  # MECHANICALLY rather than by matching per-field expectations in two suites
+  # that never meet. The same input goes through both halves into two fresh
+  # project dirs; completed_at's VALUE is normalised away (it is a wall clock,
+  # so the two runs legitimately differ) but only after both raw files have been
+  # regex-checked for the format, so the normalisation cannot mask a culture or
+  # precision divergence. Everything else — key order, the boolean literal,
+  # compact separators, the single trailing LF, the encoding — is inside the
+  # compared bytes and needs no separate assertion.
+  #
+  # SKIP, never PASS, when pwsh is absent: a missing runtime must not be
+  # mistaken for a passing parity check.
+  if ! command -v pwsh > /dev/null 2>&1; then
+    echo "  SKIP: 21w: pwsh not available — cross-half byte parity unverified"
+  else
+    G21_PS1="$SCRIPT_DIR/stride-hook.ps1"
+    G21_DB=$(g21_proj w-bash)
+    G21_DP=$(g21_proj w-ps1)
+    G21_PARITY_IN=$(g21_input "sess-parity" "$G21_COMPLETE_CMD" "$G21_OK")
+    printf '%s' "$G21_PARITY_IN" \
+      | CLAUDE_PROJECT_DIR="$G21_DB" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+    printf '%s' "$G21_PARITY_IN" \
+      | CLAUDE_PROJECT_DIR="$G21_DP" pwsh -NoProfile -File "$G21_PS1" post > /dev/null 2>&1
+    G21_TS_RE='"completed_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"'
+    G21_FMT_BASH=$(grep -Ec "$G21_TS_RE" "$G21_DB/$G21_STATE" 2>/dev/null || echo 0)
+    G21_FMT_PS1=$(grep -Ec "$G21_TS_RE" "$G21_DP/$G21_STATE" 2>/dev/null || echo 0)
+    assert_eq "21w: both halves emit the same completed_at format" \
+      "1 1" "$G21_FMT_BASH $G21_FMT_PS1"
+    sed -E 's/"completed_at":"[^"]*"/"completed_at":"X"/' "$G21_DB/$G21_STATE" \
+      > "$G21_DB/norm.json" 2>/dev/null
+    sed -E 's/"completed_at":"[^"]*"/"completed_at":"X"/' "$G21_DP/$G21_STATE" \
+      > "$G21_DP/norm.json" 2>/dev/null
+    if cmp -s "$G21_DB/norm.json" "$G21_DP/norm.json"; then
+      echo -e "  ${GREEN}PASS${RESET}: 21w: both halves produce a byte-identical record"
+      PASS=$((PASS + 1))
+    else
+      echo -e "  ${RED}FAIL${RESET}: 21w: the two halves produced different bytes"
+      echo "    bash: $(od -c "$G21_DB/norm.json" 2>/dev/null | head -6)"
+      echo "    ps1:  $(od -c "$G21_DP/norm.json" 2>/dev/null | head -6)"
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+
+  # 21x: the charset gate must be BYTE-exact, not collation-based. A bracket
+  # RANGE inside a `case` glob (`[!A-Za-z0-9_.:-]`) is collation-based and
+  # accepts a non-ASCII letter on both bash 3.2/macOS and glibc, while the ps1
+  # twin's `-cmatch '\A[A-Za-z0-9_.:-]+\z'` uses .NET ranges, which are
+  # strictly code-point based and refuse it. That is an AC5 divergence in the
+  # one gate whose entire job is to be identical — and it also falsifies the
+  # premise that lets the halves ignore their encoding difference (jq emits raw
+  # UTF-8 where ConvertTo-Json escapes non-ASCII, which can only be irrelevant
+  # if no non-ASCII byte survives this gate). The bash half therefore ENUMERATES
+  # its character set rather than using ranges.
+  G21_D=$(g21_proj x)
+  g21_input 'abcé' "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21x: a non-ASCII session id is refused, not collated in" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+  # The identifier runs through the same gate, and there the asymmetry is
+  # larger: a half that accepted it would write a record where the other half
+  # wrote none at all.
+  G21_D=$(g21_proj x2)
+  g21_input "s" "$G21_COMPLETE_CMD" \
+    '{"data":{"id":99,"identifier":"W2147é","needs_review":false},"hooks":[{"name":"before_review"}]}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21x: a non-ASCII identifier must be refused outright"
+    echo "    wrote: $(cat "$G21_D/$G21_STATE")"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21x: a non-ASCII identifier is refused outright"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21y: `tool_response.stdout` carrying a JSON OBJECT rather than a string.
+  # bash resolves that field with `jq -r`, which re-serialises the object, so it
+  # parses and records. A ps1 half that piped the PSCustomObject straight into
+  # ConvertFrom-Json would stringify it to PowerShell's "@{...}" form, fail to
+  # parse, record nothing, and announce an unparsable body — the second AC5
+  # divergence, at exactly the parse boundary the task's pitfall names.
+  # Unreachable with today's harness, which always sends stdout as a string.
+  G21_D=$(g21_proj y)
+  G21_OBJ_IN=$(jq -nc --arg c "$G21_COMPLETE_CMD" --argjson r "$G21_OK" \
+    '{session_id:"sess-obj",tool_input:{command:$c},tool_response:{stdout:$r}}')
+  printf '%s' "$G21_OBJ_IN" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21y: an object-shaped tool_response.stdout still records" \
+    "W2147" "$(jq -r '.identifier' "$G21_D/$G21_STATE" 2>/dev/null)"
+  if ! command -v pwsh > /dev/null 2>&1; then
+    echo "  SKIP: 21y: pwsh not available — object-shaped parity unverified"
+  else
+    G21_DPY=$(g21_proj y-ps1)
+    printf '%s' "$G21_OBJ_IN" \
+      | CLAUDE_PROJECT_DIR="$G21_DPY" pwsh -NoProfile -File "$SCRIPT_DIR/stride-hook.ps1" post > /dev/null 2>&1
+    sed -E 's/"completed_at":"[^"]*"/"completed_at":"X"/' "$G21_D/$G21_STATE" \
+      > "$G21_D/objnorm.json" 2>/dev/null
+    sed -E 's/"completed_at":"[^"]*"/"completed_at":"X"/' "$G21_DPY/$G21_STATE" \
+      > "$G21_DPY/objnorm.json" 2>/dev/null
+    if [ -s "$G21_D/objnorm.json" ] && cmp -s "$G21_D/objnorm.json" "$G21_DPY/objnorm.json"; then
+      echo -e "  ${GREEN}PASS${RESET}: 21y: both halves record an object-shaped stdout identically"
+      PASS=$((PASS + 1))
+    else
+      echo -e "  ${RED}FAIL${RESET}: 21y: the halves diverge on an object-shaped stdout"
+      echo "    bash: $(cat "$G21_D/objnorm.json" 2>/dev/null)"
+      echo "    ps1:  $(cat "$G21_DPY/objnorm.json" 2>/dev/null)"
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+fi
+
+# ============================================================
+# Test Group 22: agentStop gate (W2148)
+# ============================================================
+# Mirrored case-for-case by test-stride-hook.ps1 Test Group 19.
+#
+# The gate blocks on EXACTLY one condition and permits on everything else, so
+# the permits vastly outnumber the block and each one asserts ITS OWN stderr
+# reason. Exit 0 plus empty stdout is true of every permit alike and therefore
+# pins nothing — a deleted guard would still produce it.
+#
+# NOT PORTED, recorded so the omissions read as decisions:
+#   * All terminal-state cases. No .terminal-state.json writer exists anywhere
+#     in stride-copilot, so the branch has no producer and no reachable
+#     fixture; porting it would pass vacuously.
+#   * The reference's dual decision spelling. Copilot documents one spelling,
+#     so 22b2 asserts exactly two keys instead.
+echo ""
+echo "=== Test Group 22: agentStop gate (W2148) ==="
+
+if ! command -v jq > /dev/null 2>&1; then
+  echo "  SKIP: Test Group 22 (jq not available — the gate self-gates on jq)"
+else
+  # Scrub the gate's own control variables from the suite's environment before
+  # any case runs. A shell that exported STRIDE_ALLOW_STOP=1 — the gate's
+  # documented operator escape hatch — would send EVERY case down the escape
+  # hatch. The block cases fail loudly, but every permit case would pass
+  # VACUOUSLY, because "exit 0 with empty stdout" is exactly what the escape
+  # hatch produces. That is this group's own subject matter reintroduced
+  # through the harness. Cases that need one of these set it inline.
+  unset STRIDE_ALLOW_STOP STRIDE_STOP_GATE_MAX_BLOCKS CLAUDE_PROJECT_DIR
+  STOP_GATE="$SCRIPT_DIR/stride-stop-gate.sh"
+  STOP_GATE_PS1="$SCRIPT_DIR/stride-stop-gate.ps1"
+  G22_TOKEN='NOT-A-REAL-TOKEN-g22-fixture'
+  # Captured ONCE, absolute: the PATH-farm cases run with a restricted PATH,
+  # and a bare `bash` would resolve through it, so the gate would never start
+  # and every assertion in those cases would pass vacuously.
+  G22_BASH=$(command -v bash)
+
+  # Fake curl emulating `-w '\n%{http_code}'`: body, newline, code. Getting
+  # this emulation wrong is the likeliest way for the whole group to pass for
+  # the wrong reason, so it is written explicitly rather than inlined.
+  g22_stub() {
+    local d="$1" body="$2" code="$3" ex="${4:-0}"
+    mkdir -p "$d"
+    printf '%s' "$body" > "$d/body.txt"
+    printf '%s' "$code" > "$d/code.txt"
+    printf '%s' "$ex"   > "$d/exit.txt"
+    cat > "$d/curl" << 'G22STUB'
+#!/usr/bin/env bash
+_d="$(cd "$(dirname "$0")" && pwd)"
+# Redact the bearer value before recording. The group only ever needs the URL
+# (g22_calls greps for the path), never the header, and an un-redacted recorder
+# is one hand-run away from capturing a live token from a real .stride_auth.md.
+# Pure parameter expansion, so the stub gains no dependency a restricted PATH
+# farm would have to carry.
+_log="$*"
+case "$_log" in
+  *"Bearer "*)
+    _pre="${_log%%Bearer *}"; _post="${_log#*Bearer }"; _post="${_post#* }"
+    _log="${_pre}Bearer [REDACTED] ${_post}" ;;
+esac
+printf 'ARGS: %s\n' "$_log" >> "$_d/curl.log"
+_ex=$(cat "$_d/exit.txt" 2>/dev/null || printf 0)
+[ "$_ex" -eq 0 ] || exit "$_ex"
+printf '%s' "$(cat "$_d/body.txt" 2>/dev/null)"
+printf '\n%s' "$(cat "$_d/code.txt" 2>/dev/null)"
+G22STUB
+    chmod +x "$d/curl"
+  }
+  # A PATH containing ONLY the named binaries — the only way to drive
+  # `command -v` failing, since a stub can add but never remove.
+  g22_farm() {
+    local d="$1" b src; shift
+    mkdir -p "$d"
+    for b in "$@"; do
+      src=$(command -v "$b" 2>/dev/null || true)
+      [ -n "$src" ] && ln -sf "$src" "$d/$b"
+    done
+  }
+  g22_proj() {
+    local d
+    d=$(mktemp -d "$TMPDIR_TEST/g22.XXXXXX")
+    mkdir -p "$d/.stride"
+    # api.example.invalid: RFC 6761 reserved TLD, so a stub miss fails fast
+    # instead of reaching a real host.
+    printf '# auth\n\n- **API URL:** `https://api.example.invalid`\n- **API Token:** `%s`\n' \
+      "$G22_TOKEN" > "$d/.stride_auth.md"
+    printf '%s' "$d"
+  }
+  g22_state() {  # dir ident needs_review
+    printf '{"identifier":"%s","needs_review":%s,"completed_at":"2026-01-01T00:00:00Z","session_id":"g22"}\n' \
+      "$2" "$3" > "$1/.stride/.loop-state.json"
+  }
+  # stdout / stderr captured SEPARATELY: token safety must be provable per stream.
+  g22_run() {  # proj stubdir
+    G22_OUT=$(printf '{"cwd":"%s","session_id":"g22","hook_event_name":"Stop","stop_reason":"end_turn","stop_hook_active":false}' "$1" \
+      | PATH="$2:$PATH" "$G22_BASH" "$STOP_GATE" 2> "$TMPDIR_TEST/g22.err")
+    G22_RC=$?
+    G22_ERR=$(cat "$TMPDIR_TEST/g22.err" 2>/dev/null || printf '')
+  }
+  g22_decision() { printf '%s' "$1" | jq -r '.decision' 2>/dev/null || printf ''; }
+  # The count of /api/tasks/next calls the stub saw. A helper rather than an
+  # inline grep because the log FILE DOES NOT EXIST when the gate correctly
+  # never reached the network — `grep -c` on a missing file prints nothing and
+  # exits 2, so the inline form yielded "" where the assertion wanted "0", and
+  # the never-reaches-the-network cases failed for the very behaviour they were
+  # asserting. `grep -c` on an existing file with no match prints "0" already.
+  g22_calls() {  # stubdir -> count
+    local _n
+    [ -f "$1/curl.log" ] || { printf '0'; return 0; }
+    _n=$(grep -c 'api/tasks/next' "$1/curl.log" 2>/dev/null)
+    case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+    printf '%s' "$_n"
+  }
+  G22_OK='{"data":{"id":1,"identifier":"W2148"}}'
+
+  # --- The one block path ------------------------------------------------
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_exit "22a: the block path exits 0" 0 "$G22_RC"
+  assert_eq "22a: the decision is block" "block" "$(g22_decision "$G22_OUT")"
+  assert_eq "22a: exactly one /api/tasks/next call was made" "1" \
+    "$(g22_calls "$S")"
+
+  # 22a2: the value is block and NOT Gemini's deny — the wrong token means no
+  # block at all, the same silent no-op the exit-2 pitfall describes.
+  assert_eq "22a2: the decision is not the Gemini spelling" "false" \
+    "$(printf '%s' "$G22_OUT" | jq -r '.decision == "deny"' 2>/dev/null)"
+
+  # 22b (AC4): the reason names the CLAIMABLE task, not the completed one.
+  assert_contains "22b: the reason names the claimable identifier" "W2148" "$G22_OUT"
+  assert_eq "22b: the reason does not name the completed identifier" "0" \
+    "$(printf '%s' "$G22_OUT" | jq -r '.reason' 2>/dev/null | grep -c 'W2147' || true)"
+
+  # 22b2: stdout is ONE json document, exactly two keys, one line. Specifically
+  # NOT permissionDecision, which is Copilot's preToolUse contract and has no
+  # defined meaning on agentStop.
+  assert_eq "22b2: stdout carries exactly the two documented keys" "decision reason" \
+    "$(printf '%s' "$G22_OUT" | jq -r '[keys_unsorted[]] | sort | join(" ")' 2>/dev/null)"
+  assert_eq "22b2: stdout is exactly one non-empty line" "1" \
+    "$(printf '%s' "$G22_OUT" | grep -c . || true)"
+  assert_eq "22b2: the permission-request contract is not emitted" "0" \
+    "$(printf '%s' "$G22_OUT" | grep -c 'permissionDecision' || true)"
+
+  # --- Permit branches, each asserting its OWN reason --------------------
+  # 22c: no loop-state file — one of only three SILENT permits, so silence on
+  # stderr is what pins it: deleting the guard makes a talkative permit fire.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200
+  g22_run "$D" "$S"
+  assert_exit "22c: no loop state exits 0" 0 "$G22_RC"
+  assert_eq "22c: no loop state writes nothing to stdout" "" "$G22_OUT"
+  assert_eq "22c: no loop state is silent on stderr" "" "$G22_ERR"
+  assert_eq "22c: and never reaches the network" "0" \
+    "$(g22_calls "$S")"
+  # POSITIVE CONTROL: the same fixture one file away must block.
+  g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_eq "22c: positive control — adding loop state blocks" "block" "$(g22_decision "$G22_OUT")"
+
+  # 22f: needs_review true
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" true
+  g22_run "$D" "$S"
+  assert_eq "22f: needs_review true permits" "" "$G22_OUT"
+  assert_contains "22f: and says the completed task needs review" \
+    "the completed task needs human review" "$G22_ERR"
+
+  # 22f2: unparsable / not-an-object / non-boolean needs_review
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200
+  printf '{"identifier":"W2147", TRUNCA' > "$D/.stride/.loop-state.json"
+  g22_run "$D" "$S"
+  assert_contains "22f2: an unparsable loop state is announced" \
+    "the loop-state file could not be parsed" "$G22_ERR"
+  printf '"just a string"\n' > "$D/.stride/.loop-state.json"
+  g22_run "$D" "$S"
+  assert_contains "22f2: a non-object loop state reports the same reason" \
+    "the loop-state file could not be parsed" "$G22_ERR"
+  printf '{"identifier":"W2147","needs_review":"false"}\n' > "$D/.stride/.loop-state.json"
+  g22_run "$D" "$S"
+  assert_contains "22f2: a STRING needs_review is not a boolean false" \
+    "records no usable needs_review" "$G22_ERR"
+
+  # 22f3: the completed identifier's three refusals, in the twin's order
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200
+  printf '{"needs_review":false}\n' > "$D/.stride/.loop-state.json"
+  g22_run "$D" "$S"
+  assert_contains "22f3: no completed identifier is announced" \
+    "records no identifier" "$G22_ERR"
+  printf '{"identifier":"W 2147","needs_review":false}\n' > "$D/.stride/.loop-state.json"
+  g22_run "$D" "$S"
+  assert_contains "22f3: a malformed completed identifier is refused" \
+    "the completed identifier is not identifier-shaped" "$G22_ERR"
+  jq -nc --arg i "$(printf 'W%.0s' $(seq 1 65))" '{identifier:$i,needs_review:false}' \
+    > "$D/.stride/.loop-state.json"
+  g22_run "$D" "$S"
+  assert_contains "22f3: an over-long completed identifier is refused" \
+    "the completed identifier is longer than 64 characters" "$G22_ERR"
+
+  # 22d: transport failure
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "" "000" 7; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_contains "22d: a transport failure permits and says so" \
+    "the API could not be reached" "$G22_ERR"
+
+  # 22d2: 404 — the body is never read
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" '<html>404 Not Found</html>' 404
+  g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_contains "22d2: a 404 means no claimable task remains" \
+    "no claimable task remains" "$G22_ERR"
+
+  # 22d3: any other non-200 names the code
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" '{"error":"boom"}' 500; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_contains "22d3: a 500 names the code" "the API answered 500" "$G22_ERR"
+
+  # 22ae: a 3xx is NOT followed — curl carries no -L and the twin pins
+  # -MaximumRedirection 0, so both halves report the code rather than chasing
+  # the Location with the Authorization header attached.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" '' 301; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_contains "22ae: a 301 is reported, never followed" "the API answered 301" "$G22_ERR"
+
+  # 22d4 / 22y: a missing URL or token names the PAIR, never a value
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  rm -f "$D/.stride_auth.md"
+  g22_run "$D" "$S"
+  assert_contains "22d4: no auth file permits" "no API URL or token could be resolved" "$G22_ERR"
+  printf '# auth\n\n- **API URL:** `https://api.example.invalid`\n' > "$D/.stride_auth.md"
+  g22_run "$D" "$S"
+  assert_contains "22y: a URL with no token permits" "no API URL or token could be resolved" "$G22_ERR"
+
+  # 22w / 22w2: the body must be ONE json document, and an object
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" '<html>hi</html>' 200; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_contains "22w: an unparsable body is announced" \
+    "the API response could not be parsed" "$G22_ERR"
+  # A top-level ARRAY is the case the twin's ConvertFrom-Json unrolls to a
+  # scalar, so both halves must refuse it as not-an-object.
+  g22_stub "$S" '[{"data":{"identifier":"W9999"}}]' 200
+  g22_run "$D" "$S"
+  assert_contains "22w2: a top-level array is not an object" \
+    "the API response was not an object" "$G22_ERR"
+  # Two concatenated documents: a bare `jq -e .` would pass this, and every
+  # later filter would then emit one line per document.
+  g22_stub "$S" '{"data":{"identifier":"W1"}}{"data":{"identifier":"W2"}}' 200
+  g22_run "$D" "$S"
+  assert_contains "22w: two concatenated documents are refused" \
+    "the API response could not be parsed" "$G22_ERR"
+
+  # 22e: a 200 with no claimable identifier
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" '{"data":{}}' 200; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_contains "22e: an empty data object means no claimable task" \
+    "no claimable task remains" "$G22_ERR"
+  # POSITIVE CONTROL: one field away, the same fixture blocks.
+  g22_stub "$S" "$G22_OK" 200
+  g22_run "$D" "$S"
+  assert_eq "22e: positive control — an identifier blocks" "block" "$(g22_decision "$G22_OUT")"
+
+  # 22m / 22ab / 22ag: the claimable identifier is REFUSED, never sanitised.
+  # The NUL fixture is BUILT with jq (implode of codepoint 0) rather than typed:
+  # a shell variable cannot hold a NUL, so writing it literally would have the
+  # fixture arrive charset-clean — which is precisely the bug being tested for.
+  D=$(g22_proj); S="$D/stub"; g22_state "$D" "W2147" false
+  g22_stub "$S" '{"data":{"identifier":"W9999 IGNORE PRIOR"}}' 200
+  g22_run "$D" "$S"
+  assert_contains "22m: a spaced identifier is refused" \
+    "the next task identifier is not identifier-shaped" "$G22_ERR"
+  g22_stub "$S" "$(jq -nc '{data:{identifier:("W9999" + ([0]|implode) + "IGNORE.PRIOR")}}')" 200
+  g22_run "$D" "$S"
+  assert_contains "22ab: an embedded NUL is refused, not silently dropped" \
+    "the next task identifier is not identifier-shaped" "$G22_ERR"
+  g22_stub "$S" "$(jq -nc '{data:{identifier:"W9999\nclaim me"}}')" 200
+  g22_run "$D" "$S"
+  assert_contains "22ag: an embedded newline is refused" \
+    "the next task identifier is not identifier-shaped" "$G22_ERR"
+
+  # 22x: the length bound, with a BOUNDARY control so widening it reds a case
+  D=$(g22_proj); S="$D/stub"; g22_state "$D" "W2147" false
+  g22_stub "$S" "$(jq -nc --arg i "$(printf 'W%.0s' $(seq 1 65))" '{data:{identifier:$i}}')" 200
+  g22_run "$D" "$S"
+  assert_contains "22x: a 65-character identifier is refused" \
+    "the next task identifier is longer than 64 characters" "$G22_ERR"
+  g22_stub "$S" "$(jq -nc --arg i "$(printf 'W%.0s' $(seq 1 64))" '{data:{identifier:$i}}')" 200
+  g22_run "$D" "$S"
+  assert_eq "22x: boundary control — exactly 64 characters still blocks" "block" \
+    "$(g22_decision "$G22_OUT")"
+
+  # 22ad: the cleartext-http SSRF guard
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  printf '# auth\n\n- **API URL:** `http://evil.example.com`\n- **API Token:** `%s`\n' \
+    "$G22_TOKEN" > "$D/.stride_auth.md"
+  g22_run "$D" "$S"
+  assert_contains "22ad: cleartext http to a non-loopback host is refused" \
+    "cleartext http to the non-loopback host evil.example.com" "$G22_ERR"
+  assert_eq "22ad: and never reaches the network" "0" \
+    "$(g22_calls "$S")"
+  # A name that merely STARTS with 127. is an ordinary public domain.
+  printf '# auth\n\n- **API URL:** `http://127.0.0.1.evil.example.com`\n- **API Token:** `%s`\n' \
+    "$G22_TOKEN" > "$D/.stride_auth.md"
+  g22_run "$D" "$S"
+  assert_contains "22ad: a 127-prefixed NAME is not loopback" \
+    "cleartext http to the non-loopback host" "$G22_ERR"
+  # Real loopback is permitted through to the network — local dev uses it.
+  printf '# auth\n\n- **API URL:** `http://127.0.0.1:4000`\n- **API Token:** `%s`\n' \
+    "$G22_TOKEN" > "$D/.stride_auth.md"
+  g22_run "$D" "$S"
+  assert_eq "22ad: loopback is permitted through and blocks" "block" "$(g22_decision "$G22_OUT")"
+
+  # 22k: stop_hook_active short-circuits, silently, with NO file I/O and no
+  # counter spend. Copilot documents this field on agentStop.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  G22_OUT=$(printf '{"cwd":"%s","stop_hook_active":true}' "$D" \
+    | PATH="$S:$PATH" "$G22_BASH" "$STOP_GATE" 2> "$TMPDIR_TEST/g22.err")
+  G22_RC=$?
+  G22_ERR=$(cat "$TMPDIR_TEST/g22.err" 2>/dev/null || printf '')
+  assert_exit "22k: stop_hook_active exits 0" 0 "$G22_RC"
+  assert_eq "22k: stop_hook_active writes nothing to stdout" "" "$G22_OUT"
+  assert_eq "22k: stop_hook_active is silent" "" "$G22_ERR"
+  assert_eq "22k: and spends no counter budget" "absent" \
+    "$([ -e "$D/.stride/.stop-gate-blocks" ] && echo present || echo absent)"
+  # POSITIVE CONTROL: the same fixture without the flag must block.
+  g22_run "$D" "$S"
+  assert_eq "22k: positive control — without the flag it blocks" "block" "$(g22_decision "$G22_OUT")"
+
+  # 22l: the operator escape hatch
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  G22_OUT=$(printf '{"cwd":"%s"}' "$D" \
+    | STRIDE_ALLOW_STOP=1 PATH="$S:$PATH" "$G22_BASH" "$STOP_GATE" 2> "$TMPDIR_TEST/g22.err")
+  G22_ERR=$(cat "$TMPDIR_TEST/g22.err" 2>/dev/null || printf '')
+  assert_eq "22l: STRIDE_ALLOW_STOP=1 permits" "" "$G22_OUT"
+  assert_contains "22l: and says so" "STRIDE_ALLOW_STOP=1 was set" "$G22_ERR"
+
+  # 22t / 22u: missing jq is SILENT; missing curl is announced
+  D=$(g22_proj); F="$D/farm"; g22_state "$D" "W2147" false
+  g22_farm "$F" bash cat head grep sed printf mktemp rm mkdir curl tr
+  G22_OUT=$(printf '{"cwd":"%s"}' "$D" | PATH="$F" "$G22_BASH" "$STOP_GATE" 2> "$TMPDIR_TEST/g22.err")
+  G22_RC=$?
+  G22_ERR=$(cat "$TMPDIR_TEST/g22.err" 2>/dev/null || printf '')
+  assert_exit "22t: no jq exits 0" 0 "$G22_RC"
+  assert_eq "22t: no jq writes nothing to stdout" "" "$G22_OUT"
+  assert_eq "22t: no jq is silent (an environment fact, not a decision)" "" "$G22_ERR"
+  # POSITIVE CONTROL. Without one, "exit 0, empty stdout, silent stderr" is
+  # indistinguishable from a farm so restricted the gate never started at all —
+  # the whole group's jq precondition is no substitute, because it says nothing
+  # about THIS fixture. The same farm WITH jq must block.
+  #
+  # dirname is required because the stub curl resolves its own directory with
+  # it, and the stub's DATA FILES must be copied alongside it for the same
+  # reason: it reads body/code relative to wherever it sits, so copying the
+  # script alone orphans them, the stub returns nothing, and the gate reaches
+  # the TRANSPORT permit — this control would then fail for a reason having
+  # nothing to do with jq. (That is exactly how it failed on first writing.)
+  D=$(g22_proj); F="$D/farm"; S="$D/stub"; g22_stub "$S" "$G22_OK" 200
+  g22_state "$D" "W2147" false
+  g22_farm "$F" bash cat head grep sed printf mktemp rm mkdir tr jq dirname
+  cp "$S/curl" "$S/body.txt" "$S/code.txt" "$S/exit.txt" "$F/"
+  G22_OUT=$(printf '{"cwd":"%s"}' "$D" | PATH="$F" "$G22_BASH" "$STOP_GATE" 2>/dev/null)
+  assert_eq "22t: positive control — the same farm WITH jq blocks" "block" \
+    "$(g22_decision "$G22_OUT")"
+  D=$(g22_proj); F="$D/farm"; g22_state "$D" "W2147" false
+  g22_farm "$F" bash cat head grep sed printf mktemp rm mkdir jq tr
+  G22_OUT=$(printf '{"cwd":"%s"}' "$D" | PATH="$F" "$G22_BASH" "$STOP_GATE" 2> "$TMPDIR_TEST/g22.err")
+  G22_ERR=$(cat "$TMPDIR_TEST/g22.err" 2>/dev/null || printf '')
+  assert_eq "22u: no curl permits" "" "$G22_OUT"
+  assert_contains "22u: no curl is announced" "curl is not available" "$G22_ERR"
+
+  # --- The bounded counter ----------------------------------------------
+  # 22h: default budget 2 — block, block, then permit.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"; G22_D1=$(g22_decision "$G22_OUT")
+  g22_run "$D" "$S"; G22_D2=$(g22_decision "$G22_OUT")
+  g22_run "$D" "$S"; G22_D3=$(g22_decision "$G22_OUT")
+  [ -n "$G22_D3" ] || G22_D3=permit
+  assert_eq "22h: the default budget blocks twice then permits" "block block permit" \
+    "$G22_D1 $G22_D2 $G22_D3"
+  assert_contains "22h: and says the budget is spent" \
+    "the re-block budget for this completion is spent" "$G22_ERR"
+  # 22h1: the default is 2, below Copilot's own 8-block cap, so the runtime
+  # override can never fire in normal operation.
+  assert_eq "22h1: the gate's default budget is 2" "1" \
+    "$(grep -c '^STOP_GATE_MAX_BLOCKS=2$' "$STOP_GATE" || true)"
+  # 22r: a fourth turn end still permits, and the spent record is RETAINED —
+  # deleting it would cycle 2,2,0,2,2,0 forever.
+  g22_run "$D" "$S"
+  assert_eq "22r: a fourth end still permits" "" "$G22_OUT"
+  assert_eq "22r: the spent record is retained, not deleted" "present" \
+    "$([ -e "$D/.stride/.stop-gate-blocks" ] && echo present || echo absent)"
+  # 22h2: a NEW completion re-keys the counter and earns a fresh budget.
+  g22_state "$D" "W2199" false
+  g22_run "$D" "$S"
+  assert_eq "22h2: a new completed identifier earns a fresh budget" "block" \
+    "$(g22_decision "$G22_OUT")"
+  # 22h3: clearing the loop state clears the counter.
+  rm -f "$D/.stride/.loop-state.json"
+  g22_run "$D" "$S"
+  assert_eq "22h3: clearing loop state clears the counter" "absent" \
+    "$([ -e "$D/.stride/.stop-gate-blocks" ] && echo present || echo absent)"
+
+  # 22q: a malformed budget override falls back to 2 and NEVER wedges. An
+  # unvalidated value would make `[` error, the `if` read false, and the gate
+  # block unbounded — so an attempt to DISABLE the gate would wedge the session.
+  for G22_BAD in off 9999999999; do
+    D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+    G22_S1=""; G22_S2=""; G22_S3=""
+    for G22_N in 1 2 3; do
+      G22_OUT=$(printf '{"cwd":"%s"}' "$D" \
+        | STRIDE_STOP_GATE_MAX_BLOCKS="$G22_BAD" PATH="$S:$PATH" "$G22_BASH" "$STOP_GATE" 2>/dev/null)
+      G22_DEC=$(g22_decision "$G22_OUT")
+      [ -n "$G22_DEC" ] || G22_DEC=permit
+      case "$G22_N" in
+        1) G22_S1="$G22_DEC" ;;
+        2) G22_S2="$G22_DEC" ;;
+        3) G22_S3="$G22_DEC" ;;
+      esac
+    done
+    assert_eq "22q: STRIDE_STOP_GATE_MAX_BLOCKS=$G22_BAD falls back to 2, never wedges" \
+      "block block permit" "$G22_S1 $G22_S2 $G22_S3"
+  done
+
+  # 22ac: a counter destination that is not a regular file is refused rather
+  # than blocking uncounted — a wedged session is worse than a missed gate.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  mkdir -p "$D/.stride/.stop-gate-blocks"
+  g22_run "$D" "$S"
+  assert_eq "22ac: a directory counter permits rather than blocking uncounted" "" "$G22_OUT"
+  # The PRECISE wording: "could not be bounded" also matches the symlink
+  # refusal one branch above, so the loose needle would stay green if that
+  # fired instead.
+  assert_contains "22ac: and names the not-a-regular-file branch specifically" \
+    "the block counter is not a regular file" "$G22_ERR"
+  rmdir "$D/.stride/.stop-gate-blocks"
+
+  # 22af: a counter that is a SYMLINK is refused. `[ -f ]` FOLLOWS a link, so
+  # a link to a regular file passes the not-a-regular-file guard and the
+  # redirect then truncates the link's TARGET — anywhere the agent user can
+  # write, outside the repo entirely, unattended, and repeatable by rotating
+  # the completed identifier to re-arm the budget. A DANGLING link is worse:
+  # the redirect creates the target outright.
+  #
+  # The victim file is the assertion. A permit reason alone would not prove the
+  # write was avoided, and the block-path CONTROL below is what proves the gate
+  # reached the counter guard at all rather than permitting earlier for some
+  # unrelated reason.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_eq "22af: control — the fixture reaches the counter and blocks" "block" \
+    "$(g22_decision "$G22_OUT")"
+  rm -f "$D/.stride/.stop-gate-blocks"
+  printf 'PRECIOUS\n' > "$D/victim.txt"
+  ln -s "$D/victim.txt" "$D/.stride/.stop-gate-blocks"
+  g22_run "$D" "$S"
+  assert_eq "22af: a symlinked counter permits rather than following the link" "" "$G22_OUT"
+  assert_contains "22af: and says the counter is a symbolic link" \
+    "the block counter is a symbolic link" "$G22_ERR"
+  assert_eq "22af: the symlink target is NOT truncated" "PRECIOUS" \
+    "$(cat "$D/victim.txt" 2>/dev/null)"
+  # A dangling link must not be followed into existence either.
+  rm -f "$D/.stride/.stop-gate-blocks"
+  ln -s "$D/victim-absent.txt" "$D/.stride/.stop-gate-blocks"
+  g22_run "$D" "$S"
+  assert_eq "22af: a dangling symlink target is never created" "absent" \
+    "$([ -e "$D/victim-absent.txt" ] && echo present || echo absent)"
+  rm -f "$D/.stride/.stop-gate-blocks"
+
+  # 22h4: an unwritable .stride permits rather than blocking uncounted.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  # POSITIVE CONTROL first — prove the fixture blocks before it is broken.
+  g22_run "$D" "$S"
+  assert_eq "22h4: positive control — the fixture blocks while writable" "block" \
+    "$(g22_decision "$G22_OUT")"
+  rm -f "$D/.stride/.stop-gate-blocks"
+  # Mode bits do not restrain root, so as root the write SUCCEEDS and the gate
+  # blocks — which is also what the positive control above produces, so no
+  # assertion here could tell the difference. Skip rather than pass vacuously.
+  if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: 22h4 (running as root — mode bits are ignored, so the permit under test is unreachable)"
+  else
+    chmod 555 "$D/.stride" 2>/dev/null
+    g22_run "$D" "$S"
+    chmod 755 "$D/.stride" 2>/dev/null
+    assert_eq "22h4: an unwritable .stride permits" "" "$G22_OUT"
+    # The PRECISE branch wording, not the shared "cannot be bounded" tail,
+    # which appears in TWO branches' reasons (the write failure and the
+    # read-back mismatch) — asserting it would stay green if the wrong one
+    # fired. .stride already exists here, so `mkdir -p` succeeds and it is the
+    # counter WRITE that fails; the two negatives pin that discrimination.
+    assert_contains "22h4: and names the counter-write branch specifically" \
+      "the block count could not be recorded" "$G22_ERR"
+    assert_eq "22h4: and not the read-back branch's wording" "0" \
+      "$(printf '%s' "$G22_ERR" | grep -c 'did not persist' || true)"
+    assert_eq "22h4: and not the directory-creation branch's wording" "0" \
+      "$(printf '%s' "$G22_ERR" | grep -c 'could not be created' || true)"
+  fi
+
+  # B31 — "the .stride directory could not be created" (stride-stop-gate.sh:526)
+  # — has NO case, and deliberately: it is STRUCTURALLY UNREACHABLE, not merely
+  # untested. The gate reads $LOOP_STATE_FILE and returns when it is absent;
+  # that file lives INSIDE .stride, so any run reaching the later `mkdir -p`
+  # has already proved the directory exists, and `mkdir -p` on an existing
+  # directory succeeds. Only a TOCTOU race — .stride removed between the two —
+  # could fire it, and no deterministic fixture can stage that. Recorded rather
+  # than faked; the ps1 twin is identical.
+  #
+  # The counter READ-BACK branch ("the block count did not persist") is
+  # likewise uncovered: it needs a write that reports success yet does not
+  # persist, which cannot be staged without mocking the filesystem. Both are
+  # asserted NEGATIVELY above — 22h4 proves neither wording appears when the
+  # write branch fires — but neither is pinned positively, AND that negative
+  # evidence lives inside 22h4's root skip, so on a root run it is absent too.
+
+  # 22ad2: a non-http(s) scheme. Previously covered on the ps1 half (19ad2)
+  # and NOWHERE on this one — a bare cross-half asymmetry, the exact pitfall
+  # this task names. The case asserts what ACTUALLY happens rather than what
+  # the branch name suggests: the resolver's own extraction regex is
+  # `https?://`, so a non-http(s) URL yields no URL at all and the gate reaches
+  # the earlier no-URL-or-token permit. The gate's own "no recognised scheme"
+  # arm is therefore unreachable — see the note on it in stride-stop-gate.sh.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  printf '# auth\n\n- **API URL:** `ftp://api.example.invalid`\n- **API Token:** `%s`\n' \
+    "$G22_TOKEN" > "$D/.stride_auth.md"
+  g22_run "$D" "$S"
+  assert_eq "22ad2: a non-http(s) scheme permits" "" "$G22_OUT"
+  assert_contains "22ad2: and stops at the resolver, before the scheme branch" \
+    "no API URL or token could be resolved" "$G22_ERR"
+  assert_eq "22ad2: and never reaches the network" "0" "$(g22_calls "$S")"
+
+  # 22d5: the literal HTTP code "000" from a SUCCESSFUL curl. Both other 000
+  # fixtures drive it through a NON-ZERO curl exit, which the earlier
+  # empty-response branch catches — so the `000)` arm of the code case was dead
+  # to the suite. Here curl exits 0 and reports 000, the only way to reach that
+  # arm. It bites: deleting the arm sends the code to the `*)` arm, whose
+  # wording is "the API answered 000" instead.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "" "000" 0; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_contains "22d5: a 000 code from a successful curl reports unreachable" \
+    "the API could not be reached" "$G22_ERR"
+  assert_eq "22d5: and NOT the generic answered-with-a-code reason" "0" \
+    "$(printf '%s' "$G22_ERR" | grep -c 'the API answered 000' || true)"
+  assert_eq "22d5: curl really was invoked (this is not the transport branch)" "1" \
+    "$(g22_calls "$S")"
+
+  # 22ai: the stub recorder REDACTS the bearer value. The recorder exists only
+  # so g22_calls can count requests by URL; it never needs the header. An
+  # un-redacted recorder is one hand-run away from capturing a live token from
+  # a real .stride_auth.md into a file, and .gitignore now asserts this
+  # property in a comment — so it needs a case, or the comment rots into a
+  # claim the code does not support.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  # `grep -c` prints "0" AND exits 1 when nothing matches, so a trailing
+  # `|| printf 0` appends a SECOND zero and the value becomes "00" — the same
+  # trap g22_calls documents. Normalise through a guard instead.
+  G22_TOKHITS=$(grep -c "$G22_TOKEN" "$S/curl.log" 2>/dev/null)
+  case "$G22_TOKHITS" in ''|*[!0-9]*) G22_TOKHITS=0 ;; esac
+  G22_REDHITS=$(grep -c 'Bearer \[REDACTED\]' "$S/curl.log" 2>/dev/null)
+  case "$G22_REDHITS" in ''|*[!0-9]*) G22_REDHITS=0 ;; esac
+  assert_eq "22ai: the recorder never captures the bearer value" "0" "$G22_TOKHITS"
+  assert_eq "22ai: it records the redaction marker instead" "1" "$G22_REDHITS"
+  assert_eq "22ai: and still records the URL g22_calls counts" "1" "$(g22_calls "$S")"
+
+  # --- Security ----------------------------------------------------------
+  # 22i: the token never reaches stdout OR stderr, on any response shape.
+  D=$(g22_proj); S="$D/stub"; g22_state "$D" "W2147" false
+  for G22_CODE in 200 000 500; do
+    case "$G22_CODE" in
+      200) g22_stub "$S" "$G22_OK" 200 ;;
+      000) g22_stub "$S" "" "000" 7 ;;
+      500) g22_stub "$S" '{"error":"x"}' 500 ;;
+    esac
+    g22_run "$D" "$S"
+    assert_eq "22i: the token never reaches stdout (code $G22_CODE)" "0" \
+      "$(printf '%s' "$G22_OUT" | grep -c "$G22_TOKEN" || true)"
+    assert_eq "22i: the token never reaches stderr (code $G22_CODE)" "0" \
+      "$(printf '%s' "$G22_ERR" | grep -c "$G22_TOKEN" || true)"
+  done
+
+  # --- AC3: exit 2 alone does NOT block on this runtime ------------------
+  # 22z. This is the case the task exists for, so it is written to PROVE the
+  # claim rather than assert it.
+  #
+  # Part 1 — a runtime simulator, written from GitHub's documented agentStop
+  # contract: a turn is blocked IFF stdout parses as ONE JSON document whose
+  # .decision is "block". The exit code is IGNORED, because on agentStop a
+  # non-zero exit is logged and skipped — a warning, not a deny.
+  #
+  # THIS SIMULATOR IS A MODEL OF THE DOCUMENTED CONTRACT, NOT AN OBSERVATION OF
+  # THE RUNTIME. Only the manual verification step (restart Copilot and watch a
+  # real turn refuse to end) settles the runtime behaviour.
+  copilot_agentstop_outcome() {  # stdout -> "blocked" | "ended"
+    if printf '%s' "$1" | jq -e -s 'length == 1 and (.[0].decision? == "block")' \
+         > /dev/null 2>&1; then
+      printf 'blocked'
+    else
+      printf 'ended'
+    fi
+  }
+  # Part 2 — feed it the REAL gate's output, and a naive-port stub carrying its
+  # refusal the Claude Code way (message on stderr, exit 2). The two differ only
+  # in HOW the refusal is expressed.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  G22_REAL=$(copilot_agentstop_outcome "$G22_OUT")
+  cat > "$D/naive-port.sh" << 'G22NAIVE'
+#!/usr/bin/env bash
+# What an unchanged Claude Code port produces: the prompt on stderr, exit 2.
+printf 'Stride: this turn cannot end yet. Claim W2148.\n' >&2
+exit 2
+G22NAIVE
+  chmod +x "$D/naive-port.sh"
+  G22_NOUT=$("$G22_BASH" "$D/naive-port.sh" 2>/dev/null)
+  G22_NRC=$?
+  G22_NAIVE=$(copilot_agentstop_outcome "$G22_NOUT")
+  assert_eq "22z: the stdout decision blocks; exit 2 alone does NOT" \
+    "blocked ended" "$G22_REAL $G22_NAIVE"
+  assert_exit "22z: and the naive port really did exit 2" 2 "$G22_NRC"
+  # Part 3 — structural backstop, comments stripped: the gate's own header
+  # discusses exit 2 at length, so a raw grep would match the prose.
+  assert_eq "22z: no CODE path in either half exits 2" "0 0" \
+    "$(grep -v '^[[:space:]]*#' "$STOP_GATE" | grep -c 'exit 2' || true) $(grep -v '^[[:space:]]*#' "$STOP_GATE_PS1" | grep -c 'exit 2' || true)"
+
+  # 22z2: block and permit alike exit 0 (the fail-open half of AC5).
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"; G22_R1=$G22_RC
+  rm -f "$D/.stride/.loop-state.json"
+  g22_run "$D" "$S"; G22_R2=$G22_RC
+  g22_state "$D" "W2147" true
+  g22_run "$D" "$S"; G22_R3=$G22_RC
+  assert_eq "22z2: block and every permit alike exit 0" "0 0 0" "$G22_R1 $G22_R2 $G22_R3"
+
+  # --- AC6: the registration --------------------------------------------
+  # 22n: TIER 1, structural and machine-checked. This asserts the entry is
+  # well-formed and resolves to the gate. It CANNOT prove Copilot parses it —
+  # see 22n2 and the gate header.
+  G22_HOOKS="$SCRIPT_DIR/hooks.json"
+  assert_eq "22n: hooks.json is valid JSON" "ok" \
+    "$(jq -e . "$G22_HOOKS" > /dev/null 2>&1 && echo ok || echo no)"
+  assert_eq "22n: a Stop entry is registered" "true" \
+    "$(jq -r '.hooks | has("Stop")' "$G22_HOOKS" 2>/dev/null)"
+  assert_eq "22n: exactly one Stop entry, with exactly one command" "1 1" \
+    "$(jq -r '(.hooks.Stop | length)' "$G22_HOOKS" 2>/dev/null) $(jq -r '(.hooks.Stop[0].hooks | length)' "$G22_HOOKS" 2>/dev/null)"
+  assert_eq "22n: the Stop entry carries no matcher (Stop is not tool-scoped)" "false" \
+    "$(jq -r '.hooks.Stop[0] | has("matcher")' "$G22_HOOKS" 2>/dev/null)"
+  assert_eq "22n: it resolves to the stop gate via the port's path convention" "true" \
+    "$(jq -r '.hooks.Stop[0].hooks[0].command | (startswith("${CLAUDE_PLUGIN_ROOT}/") and endswith("stride-stop-gate.sh"))' "$G22_HOOKS" 2>/dev/null)"
+  # Only ONE Stop-family spelling: a loader honouring both would double-fire
+  # the gate and double-spend its budget.
+  assert_eq "22n: agentStop is not ALSO registered" "false" \
+    "$(jq -r '.hooks | has("agentStop")' "$G22_HOOKS" 2>/dev/null)"
+  assert_eq "22n: SubagentStop is not registered" "false" \
+    "$(jq -r '.hooks | has("SubagentStop")' "$G22_HOOKS" 2>/dev/null)"
+  # The .ps1 is NOT registered — the .sh execs it on native Windows, and
+  # registering both would double-fire.
+  assert_eq "22n: the ps1 twin is not separately registered" "0" \
+    "$(jq -r '[.. | strings | select(test("stride-stop-gate[.]ps1"))] | length' "$G22_HOOKS" 2>/dev/null)"
+  # REGRESSION GUARD: a malformed Stop entry that broke the file would silently
+  # kill the two working hooks, and every assertion above would still pass.
+  assert_eq "22n: the pre-existing PreToolUse/PostToolUse entries still parse" "true" \
+    "$(jq -r '.hooks | (has("PreToolUse") and has("PostToolUse"))' "$G22_HOOKS" 2>/dev/null)"
+  assert_eq "22o: the gate ships executable" "ok" \
+    "$([ -x "$STOP_GATE" ] && echo ok || echo no)"
+
+  # 22n2: TIER 3 — the live parse. SKIP, never PASS: a missing runtime must not
+  # be mistaken for a verified registration. This is the one part of AC6 that
+  # cannot be satisfied offline.
+  if ! command -v copilot > /dev/null 2>&1; then
+    echo "  SKIP: 22n2 (live registration parse — requires a running Copilot CLI; 'copilot' is not on PATH)"
+  elif [ "${STRIDE_COPILOT_LIVE:-}" != "1" ]; then
+    echo "  SKIP: 22n2 (live registration parse — set STRIDE_COPILOT_LIVE=1 to run it)"
+  else
+    assert_eq "22n2: copilot parses the plugin hooks file" "ok" \
+      "$(copilot plugin list > /dev/null 2>&1 && echo ok || echo no)"
+  fi
+
+  # 22p: both Windows-shim failure arms exit 0 and neither exits 2. Copied
+  # verbatim from a gate that exits 2, either arm would become a permanent,
+  # UNCOUNTED block of every turn end on that machine.
+  assert_eq "22p: both Windows-shim failure arms permit" "2" \
+    "$(awk '/Windows detected but/,/exit 0/' "$STOP_GATE" | grep -c 'exit 0' || true)"
+
+  # 22aa: stdout discipline, structurally. Exactly one statement writes to fd 1,
+  # and every diagnostic is redirected to stderr.
+  assert_eq "22aa: exactly one stdout writer" "1" \
+    "$(grep -v '^[[:space:]]*#' "$STOP_GATE" | grep -c 'jq -nc --arg r' || true)"
+  assert_eq "22aa: no bare echo in the gate" "0" \
+    "$(grep -v '^[[:space:]]*#' "$STOP_GATE" | grep -cE '^[[:space:]]*echo ' || true)"
+  assert_eq "22aa: every gate diagnostic goes to stderr" "0" \
+    "$(grep -n "printf 'stride-stop-gate" "$STOP_GATE" | grep -vc '>&2' || true)"
+
+  # 22ah: cross-half parity of the permit reasons. The two halves must not
+  # drift by eye — pin it with a byte comparison, as Group 21 does for the
+  # record. The needs-review permit is used because it needs no network.
+  if ! command -v pwsh > /dev/null 2>&1; then
+    echo "  SKIP: 22ah (cross-half reason parity — pwsh is not available)"
+  else
+    D3=$(g22_proj); g22_state "$D3" "W2147" true
+    G22_SH_NR=$(printf '{"cwd":"%s"}' "$D3" | "$G22_BASH" "$STOP_GATE" 2>&1 > /dev/null)
+    G22_PS_NR=$(printf '{"cwd":"%s"}' "$D3" \
+      | pwsh -NoProfile -File "$STOP_GATE_PS1" 2>&1 > /dev/null)
+    assert_eq "22ah: both halves report the needs-review permit identically" \
+      "$G22_SH_NR" "$G22_PS_NR"
+    D4=$(g22_proj); g22_state "$D4" "W 2147" false
+    G22_SH_ID=$(printf '{"cwd":"%s"}' "$D4" | "$G22_BASH" "$STOP_GATE" 2>&1 > /dev/null)
+    G22_PS_ID=$(printf '{"cwd":"%s"}' "$D4" \
+      | pwsh -NoProfile -File "$STOP_GATE_PS1" 2>&1 > /dev/null)
+    assert_eq "22ah: and the malformed-identifier permit identically" \
+      "$G22_SH_ID" "$G22_PS_ID"
+  fi
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

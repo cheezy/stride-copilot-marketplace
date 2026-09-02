@@ -150,6 +150,13 @@ function Wait-ForListener {
 # ============================================================
 $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "stride-ps-test-$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Path $TmpDir -Force | Out-Null
+# Match the bash half's fixture-root permissions. mktemp -d gives that half
+# 0700, but New-Item takes the default 0755 in a shared temp directory on
+# POSIX, leaving every fixture's .stride_auth.md world-readable for the life of
+# the run. They hold only sentinels today; this closes the asymmetry before
+# anyone points a fixture at a non-sentinel value. Inert on Windows, whose temp
+# path is already per-user.
+if (-not $IsWindows) { & chmod 700 $TmpDir 2>$null }
 
 try {
 
@@ -2455,6 +2462,1039 @@ echo "ran"
     } finally {
         Remove-Job $crListenerJob -Force -ErrorAction SilentlyContinue
     }
+}
+
+# ============================================================
+# Test Group 18: W2147 loop state recorded on completion
+# ============================================================
+# PowerShell parity of test-stride-hook.sh Group 21, case for case. The Stop
+# gate cannot refuse an action it has no evidence for; these cover the file
+# that becomes that evidence. Every completed_at assertion reads the RAW file
+# text rather than a ConvertFrom-Json result, because PowerShell's parser
+# coerces an ISO-8601 string to [DateTime] — a parsed assertion would test the
+# parser instead of the writer.
+Write-Host ""
+Write-Host "=== Test Group 18: W2147 loop state on completion (ps1) ==="
+
+$G18Url = 'https://www.stridelikeaboss.com'
+$G18State = '.stride/.loop-state.json'
+$G18CompleteCmd = "curl -sS -X PATCH $G18Url/api/tasks/99/complete -d @payload.json | tee r.json"
+$G18ClaimCmd = "curl -sS -X POST $G18Url/api/tasks/claim -d @c.json | tee r.json"
+$G18Ok = '{"data":{"id":99,"identifier":"W2147","needs_review":false},"hooks":[{"name":"before_review"}]}'
+
+# session_id is added ONLY when non-empty, so the "no session id" case
+# genuinely omits the key rather than carrying an empty one.
+function New-G18Input {
+    param([string]$SessionId, [string]$Command, [string]$Stdout)
+    $o = [ordered]@{}
+    if ($SessionId) { $o['session_id'] = $SessionId }
+    $o['tool_input'] = @{ command = $Command }
+    $o['tool_response'] = @{ stdout = $Stdout }
+    return ($o | ConvertTo-Json -Compress -Depth 6)
+}
+
+function New-G18Project {
+    param([string]$Name)
+    $d = Join-Path $TmpDir "w2147-$Name"
+    if (Test-Path $d) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Path (Join-Path $d '.stride') -Force | Out-Null
+    Set-Content -Path (Join-Path $d '.stride.md') -Value @'
+## before_doing
+```bash
+```
+
+## before_review
+```bash
+```
+'@ -Encoding UTF8
+    return $d
+}
+
+function Get-G18Raw {
+    param([string]$Dir)
+    $f = Join-Path $Dir $G18State
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return '' }
+    return (Get-Content -LiteralPath $f -Raw)
+}
+
+function Get-G18Field {
+    param([string]$Dir, [string]$Name)
+    $raw = Get-G18Raw -Dir $Dir
+    if (-not $raw) { return '' }
+    try { $o = $raw | ConvertFrom-Json } catch { return '' }
+    if ($null -eq $o -or $o.PSObject.Properties.Name -notcontains $Name) { return '' }
+    return [string]$o.$Name
+}
+
+function Test-G18StateExists {
+    param([string]$Dir)
+    return (Test-Path -LiteralPath (Join-Path $Dir $G18State) -PathType Leaf)
+}
+
+# 18a: a successful completion writes the file with the right identifier.
+$g18a = New-G18Project 'a'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 'sess-abc' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18a
+Assert-Eq "18a: a successful completion records the identifier" "W2147" (Get-G18Field -Dir $g18a -Name 'identifier')
+Assert-Eq "18a: it records needs_review from the response" "False" (Get-G18Field -Dir $g18a -Name 'needs_review')
+Assert-Eq "18a: it records the session id" "sess-abc" (Get-G18Field -Dir $g18a -Name 'session_id')
+$g18aRaw = Get-G18Raw -Dir $g18a
+if ($g18aRaw -cmatch '"completed_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"') {
+    Write-Host "  PASS: 18a: completed_at is an ISO8601 Z timestamp in the raw file" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 18a: completed_at is not an ISO8601 Z timestamp, raw: $g18aRaw" -ForegroundColor Red
+    $script:FAIL++
+}
+
+# 18b: needs_review=true is recorded VERBATIM, and as a JSON boolean literal
+# rather than the string "True" that an uncast ConvertTo-Json would emit. The
+# raw-text assertion is what pins both the boolean type and the compact
+# separators the bash half's `jq -nc` produces.
+$g18b = New-G18Project 'b'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data":{"id":99,"identifier":"W555","needs_review":true},"hooks":[{"name":"before_review"}]}') `
+    -Phase 'post' -ProjectDir $g18b
+Assert-Contains "18b: needs_review is the boolean literal true, compactly separated" '"needs_review":true' (Get-G18Raw -Dir $g18b)
+Assert-NotContains "18b: needs_review is never the string True" '"needs_review":"True"' (Get-G18Raw -Dir $g18b)
+
+# 18c: the session id falls back to CLAUDE_SESSION_ID when the input omits it.
+$g18c = New-G18Project 'c'
+$g18SavedSid = $env:CLAUDE_SESSION_ID
+try {
+    $env:CLAUDE_SESSION_ID = 'env-sess'
+    $null = Invoke-HookScript -InputJson (New-G18Input -SessionId '' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18c
+    Assert-Eq "18c: the session id falls back to CLAUDE_SESSION_ID" "env-sess" (Get-G18Field -Dir $g18c -Name 'session_id')
+
+    # 18d: with no session id anywhere it degrades to "unknown" rather than
+    # dropping the record. This is the ORDINARY case on this runtime: Copilot's
+    # documented hook payload carries no session field, so the
+    # attempt-then-degrade chain exists to keep the halves identical rather
+    # than because a session id is expected today.
+    $g18d = New-G18Project 'd'
+    $env:CLAUDE_SESSION_ID = ''
+    $null = Invoke-HookScript -InputJson (New-G18Input -SessionId '' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18d
+    Assert-Eq "18d: an absent session id degrades to unknown" "unknown" (Get-G18Field -Dir $g18d -Name 'session_id')
+} finally {
+    if ($g18SavedSid) { $env:CLAUDE_SESSION_ID = $g18SavedSid } else { $env:CLAUDE_SESSION_ID = '' }
+}
+
+# 18e: a session id that is not identifier-shaped is refused, not sanitised.
+$g18e = New-G18Project 'e'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 'not a/session id' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18e
+Assert-Eq "18e: a non-identifier-shaped session id degrades to unknown" "unknown" (Get-G18Field -Dir $g18e -Name 'session_id')
+
+# 18f: a 422 does NOT write the file. Every non-success body the API emits
+# lacks `data`, which is the discriminator. Under Set-StrictMode -Version
+# Latest the naive property read this replaces would be a TERMINATING error,
+# turning "record nothing" into "fail the completion".
+$g18f = New-G18Project 'f'
+$g18fRes = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"errors":{"completion_summary":["can''t be blank"]}}') -Phase 'post' -ProjectDir $g18f
+Assert-Exit "18f: a 422 completion does not fail the hook" 0 $g18fRes.ExitCode
+if (Test-G18StateExists -Dir $g18f) {
+    Write-Host "  FAIL: 18f: a 422 completion must not write the loop state" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18f: a 422 completion does not write the loop state" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18g: THE REGRESSION GUARD. Get-ResponsePayload is canonical-file-first (D118)
+# and .stride/.last-api-response.json survives across calls, so a build on it as
+# the Tier-1 source would resolve the previous CLAIM payload here — which
+# carries both fields — and record a completion that never happened. A naive
+# implementation passes 18f and fails this.
+$g18g = New-G18Project 'g'
+Set-Content -Path (Join-Path $g18g '.stride/.last-api-response.json') `
+    -Value '{"data":{"id":99,"identifier":"W9999","needs_review":true},"hook":{"name":"before_doing"}}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"errors":{"base":["unprocessable"]}, TRUNCA') -Phase 'post' -ProjectDir $g18g
+if (Test-G18StateExists -Dir $g18g) {
+    Write-Host "  FAIL: 18g: a truncated 422 must not inherit the previous claim's payload, wrote: $(Get-G18Raw -Dir $g18g)" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18g: a truncated 422 does not inherit the previous claim's payload" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18h: the other side of 18g — a harness-truncated SUCCESS still records, via
+# the canonical snapshot, but only because it demonstrably belongs to THIS
+# completion (hooks is an array, and the task id matches the routed id).
+$g18h = New-G18Project 'h'
+Set-Content -Path (Join-Path $g18h '.stride/.last-api-response.json') `
+    -Value '{"data":{"id":99,"identifier":"W777","needs_review":false},"hooks":[{"name":"before_review"}]}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data":{"identifier":"W7 TRUNCA') -Phase 'post' -ProjectDir $g18h
+Assert-Eq "18h: a truncated success recovers from the matching snapshot" "W777" (Get-G18Field -Dir $g18h -Name 'identifier')
+
+# 18i: and that recovery refuses a snapshot belonging to a DIFFERENT task.
+$g18i = New-G18Project 'i'
+Set-Content -Path (Join-Path $g18i '.stride/.last-api-response.json') `
+    -Value '{"data":{"id":12345,"identifier":"W_OTHER","needs_review":false},"hooks":[{"name":"before_review"}]}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data": TRUNCA') -Phase 'post' -ProjectDir $g18i
+if (Test-G18StateExists -Dir $g18i) {
+    Write-Host "  FAIL: 18i: recovery must refuse a snapshot for another task id" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18i: recovery refuses a snapshot for another task id" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18j: a claim clears a stale record.
+$g18j = New-G18Project 'j'
+Set-Content -Path (Join-Path $g18j $G18State) `
+    -Value '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"data":{"id":99,"identifier":"W1"},"hook":{"name":"before_doing"}}') -Phase 'post' -ProjectDir $g18j
+if (Test-G18StateExists -Dir $g18j) {
+    Write-Host "  FAIL: 18j: a claim must clear the previous completion's loop state" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18j: a claim clears the previous completion's loop state" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18k: atomicity, from both ends. No temp survives a success, and structurally
+# the writer stages+renames rather than writing straight at the destination.
+# The bash half asserts this with awk/grep over its own function body; the ps1
+# equivalent asserts the three constructs that make the write atomic and
+# encoding-correct, and the absence of the one that would not be.
+$g18k = New-G18Project 'k'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18k
+$g18kTemps = @(Get-ChildItem -Path (Join-Path $g18k '.stride') -Filter 'loop-state.*' -File -ErrorAction SilentlyContinue)
+Assert-Eq "18k: no temp file survives a successful write" "0" ([string]$g18kTemps.Count)
+$g18kSrc = Get-Content -LiteralPath $HookScript -Raw
+$g18kBody = ''
+if ($g18kSrc -cmatch '(?s)function Write-LoopState \{.*?\n\}') { $g18kBody = $Matches[0] }
+Assert-Contains "18k: the writer renames a staged temp into place" 'Move-Item' $g18kBody
+Assert-Contains "18k: the writer emits UTF-8 without BOM via WriteAllText" 'WriteAllText' $g18kBody
+Assert-NotContains "18k: the writer never uses Set-Content (ANSI + CRLF on 5.1)" 'Set-Content' $g18kBody
+
+# 18l: the file carries exactly the four documented keys and nothing else —
+# never the response body, task free text, or the Bearer token that rides in
+# the same hook input the session id is read from.
+$g18l = New-G18Project 'l'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' `
+    -Command "curl -sS -X PATCH $G18Url/api/tasks/99/complete -H 'Authorization: Bearer stride_dev_SECRETVALUE' -d @p.json | tee r.json" `
+    -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18l
+$g18lKeys = ''
+try { $g18lKeys = (((Get-G18Raw -Dir $g18l) | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ' ' } catch { $g18lKeys = '' }
+Assert-Eq "18l: the file carries exactly the four documented keys" "completed_at identifier needs_review session_id" $g18lKeys
+Assert-NotContains "18l: the loop state never carries the Bearer token value" 'SECRETVALUE' (Get-G18Raw -Dir $g18l)
+Assert-NotContains "18l: the loop state never carries the Authorization header" 'Bearer' (Get-G18Raw -Dir $g18l)
+
+# 18m: the full claim -> complete -> claim cycle, asserted as ONE triple rather
+# than three separate assertions: split up, the middle one could be quietly
+# weakened while the other two still passed.
+$g18m = New-G18Project 'm'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"data":{"id":99,"identifier":"W2147"},"hook":{"name":"before_doing"}}') -Phase 'post' -ProjectDir $g18m
+$g18mAfterClaim = if (Test-G18StateExists -Dir $g18m) { 'present' } else { 'absent' }
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18m
+$g18mAfterComplete = if (Test-G18StateExists -Dir $g18m) { 'present' } else { 'absent' }
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"data":{"id":100,"identifier":"W2148"},"hook":{"name":"before_doing"}}') -Phase 'post' -ProjectDir $g18m
+$g18mAfterNext = if (Test-G18StateExists -Dir $g18m) { 'present' } else { 'absent' }
+Assert-Eq "18m: claim -> complete -> claim leaves the state absent/present/absent" `
+    "absent present absent" "$g18mAfterClaim $g18mAfterComplete $g18mAfterNext"
+
+# 18n: the clear is UNCONDITIONAL, including on a FAILED claim. The claim that
+# fails most often is the one against an empty ready queue — how essentially
+# every session ends — and a record preserved there is byte-identical to one
+# left by an agent that completed and never claimed at all.
+$g18n = New-G18Project 'n'
+Set-Content -Path (Join-Path $g18n $G18State) `
+    -Value '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"errors":{"base":["no task available"]}}') -Phase 'post' -ProjectDir $g18n
+if (Test-G18StateExists -Dir $g18n) {
+    Write-Host "  FAIL: 18n: an empty-queue claim must still clear (no ambiguous record)" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18n: an empty-queue claim still clears (no ambiguous record)" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18o: and a claim whose payload cannot be PARSED still clears. THIS is the
+# case that pins the clear's placement on this port: the sibling
+# .stride-changed-files.json / .stride-diff-upload-state clears look
+# unconditional but sit inside the caching block's `try`, whose
+# `$Input | ConvertFrom-Json` throws on exactly this input — so a loop-state
+# clear placed beside them would be skipped here and diverge from the bash half.
+$g18o = New-G18Project 'o'
+Set-Content -Path (Join-Path $g18o $G18State) `
+    -Value '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"data":{"id":9 TRUNCA') -Phase 'post' -ProjectDir $g18o
+if (Test-G18StateExists -Dir $g18o) {
+    Write-Host "  FAIL: 18o: an unparsable claim must still clear (safe direction)" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18o: an unparsable claim still clears (safe direction)" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18p: a completion carrying NO tool_response at all. Under Set-StrictMode
+# -Version Latest an absent property read is a terminating error, so this is
+# the case that proves every level is guarded.
+$g18p = New-G18Project 'p'
+$g18pInput = [ordered]@{ session_id = 's'; tool_input = @{ command = $G18CompleteCmd } } | ConvertTo-Json -Compress -Depth 6
+$g18pRes = Invoke-HookScript -InputJson $g18pInput -Phase 'post' -ProjectDir $g18p
+Assert-Exit "18p: an absent tool_response does not fail the hook" 0 $g18pRes.ExitCode
+# The diagnostic channel must stay QUIET here: there was no body at all, so
+# announcing a parse failure would claim something that never happened.
+Assert-NotContains "18p: an absent body is not announced as unparsable" 'unparsable' $g18pRes.Stderr
+if (Test-G18StateExists -Dir $g18p) {
+    Write-Host "  FAIL: 18p: an absent tool_response must write no loop state" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18p: an absent tool_response writes no loop state" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18q: the charset gate must agree with the bash twin, and the one input where
+# the two shells can silently disagree is a TRAILING newline. bash reads both
+# values through `$( )`, which strips linefeeds and leaves a carriage return
+# behind; this half therefore strips LF ONLY before validating. Stripping CRLF
+# here would record "abc" where bash records "unknown" — closing the LF
+# divergence by opening a CR one.
+$g18q1 = New-G18Project 'q1'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId "abc`n" -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18q1
+Assert-Eq "18q: a trailing newline in the session id is stripped, not refused" "abc" (Get-G18Field -Dir $g18q1 -Name 'session_id')
+$g18q2 = New-G18Project 'q2'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId "abc`r`n" -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18q2
+Assert-Eq "18q: a trailing CRLF in the session id is refused" "unknown" (Get-G18Field -Dir $g18q2 -Name 'session_id')
+$g18q3 = New-G18Project 'q3'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId "a`nb" -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18q3
+Assert-Eq "18q: an interior newline in the session id is refused" "unknown" (Get-G18Field -Dir $g18q3 -Name 'session_id')
+
+# 18r: an UNPARSABLE completion body is announced, because the completion may
+# have succeeded server-side with only the harness's copy cut. A plain 422 and
+# a well-formed scalar body stay QUIET — the reason the decision is made by an
+# actual parse rather than by "did the payload resolve to $null", which is true
+# for four distinct reasons of which only one is a parse failure.
+$g18r1 = New-G18Project 'r1'
+$g18r1Res = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data":{"id":99,"ident TRUNCA') -Phase 'post' -ProjectDir $g18r1
+Assert-Contains "18r: an unparsable completion body is announced" 'unparsable' $g18r1Res.Stderr
+$g18r2 = New-G18Project 'r2'
+$g18r2Res = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout 'false') -Phase 'post' -ProjectDir $g18r2
+Assert-NotContains "18r: a well-formed scalar body is not announced as unparsable" 'unparsable' $g18r2Res.Stderr
+$g18r3 = New-G18Project 'r3'
+$g18r3Res = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"errors":{"base":["bad"]}}') -Phase 'post' -ProjectDir $g18r3
+Assert-NotContains "18r: a plain 422 records nothing and stays quiet" 'unparsable' $g18r3Res.Stderr
+
+# 18s: the two never-fatal failure paths that need POSIX permissions, plus the
+# non-regular-file guard that does not. `Move-Item` onto a DIRECTORY relocates
+# the temp INSIDE it instead of failing, so the writer's own catch never runs:
+# the record would land where no reader looks and the temp would survive
+# indefinitely. The guard exists because the move's success is the wrong signal.
+$g18s = New-G18Project 's'
+New-Item -ItemType Directory -Path (Join-Path $g18s $G18State) -Force | Out-Null
+$g18sRes = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18s
+Assert-Exit "18s: a non-regular-file destination does not fail the completion" 0 $g18sRes.ExitCode
+Assert-Contains "18s: a non-regular-file destination is announced on stderr" 'not a regular file' $g18sRes.Stderr
+$g18sStray = @(Get-ChildItem -Path (Join-Path $g18s $G18State) -Filter 'loop-state.*' -File -ErrorAction SilentlyContinue)
+Assert-Eq "18s: and no temp is relocated inside it" "0" ([string]$g18sStray.Count)
+
+if ($IsWindows) {
+    Write-Host "  SKIP: 18s: POSIX-permission cases (unwritable/unclearable .stride) — bash 21m/21t cover them"
+} else {
+    # An unwritable .stride/ is announced and swallowed: the loop state is a
+    # gate input, not a correctness dependency, so it must never fail the
+    # completion.
+    $g18sw = New-G18Project 'sw'
+    & chmod 500 (Join-Path $g18sw '.stride') 2>$null
+    $g18swRes = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18sw
+    & chmod 700 (Join-Path $g18sw '.stride') 2>$null
+    Assert-Exit "18s: an unwritable .stride does not fail the completion" 0 $g18swRes.ExitCode
+    Assert-Contains "18s: an unwritable .stride is announced on stderr" 'loop state' $g18swRes.Stderr
+
+    # A clear that FAILS must be announced too. Before this, an operator was
+    # told when a record could not be WRITTEN but never when one could not be
+    # CLEARED — the direction the design itself calls dangerous.
+    $g18sc = New-G18Project 'sc'
+    $null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18sc
+    & chmod 555 (Join-Path $g18sc '.stride') 2>$null
+    $g18scRes = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+        -Stdout '{"data":{"id":902,"identifier":"W2902","needs_review":false},"hook":{"name":"before_doing"}}') -Phase 'post' -ProjectDir $g18sc
+    & chmod 755 (Join-Path $g18sc '.stride') 2>$null
+    Assert-Exit "18s: an unclearable loop state does not fail the claim" 0 $g18scRes.ExitCode
+    Assert-Contains "18s: an unclearable loop state is announced on stderr" 'could not clear the loop state' $g18scRes.Stderr
+}
+
+# 18t: AC5 — "both halves produce a byte-identical record" — asserted
+# MECHANICALLY, and deliberately redundant with bash 21w so the parity claim is
+# checked whichever suite a reviewer runs. The same input goes through both
+# halves; completed_at's VALUE is normalised away (it is a wall clock, so the
+# two runs legitimately differ) but only AFTER both raw files have been
+# format-checked, so the normalisation cannot mask a culture or precision
+# divergence. Everything else — key order, the boolean literal, compact
+# separators, the single trailing LF, the encoding — is inside the compared
+# bytes.
+#
+# SKIP, never PASS, when bash is absent: a missing runtime must not be mistaken
+# for a passing parity check.
+$g18Bash = Get-Command bash -ErrorAction SilentlyContinue
+if (-not $g18Bash) {
+    Write-Host "  SKIP: 18t: bash not available — cross-half byte parity unverified"
+} else {
+    $g18tP = New-G18Project 't-ps1'
+    $g18tB = New-G18Project 't-bash'
+    $g18tIn = New-G18Input -SessionId 'sess-parity' -Command $G18CompleteCmd -Stdout $G18Ok
+    $null = Invoke-HookScript -InputJson $g18tIn -Phase 'post' -ProjectDir $g18tP
+    $g18tShScript = Join-Path $ScriptDir 'stride-hook.sh'
+    $g18tInFile = Join-Path $TmpDir 'g18t-input.json'
+    [System.IO.File]::WriteAllText($g18tInFile, $g18tIn)
+    $g18tPsi = [System.Diagnostics.ProcessStartInfo]::new()
+    $g18tPsi.FileName = 'bash'
+    $g18tPsi.Arguments = "`"$g18tShScript`" post"
+    $g18tPsi.RedirectStandardInput = $true
+    $g18tPsi.RedirectStandardOutput = $true
+    $g18tPsi.RedirectStandardError = $true
+    $g18tPsi.UseShellExecute = $false
+    $g18tPsi.Environment['CLAUDE_PROJECT_DIR'] = $g18tB
+    $g18tProc = [System.Diagnostics.Process]::Start($g18tPsi)
+    $g18tProc.StandardInput.Write($g18tIn)
+    $g18tProc.StandardInput.Close()
+    $null = $g18tProc.StandardOutput.ReadToEnd()
+    $null = $g18tProc.StandardError.ReadToEnd()
+    $g18tProc.WaitForExit()
+
+    $g18tRawP = Get-G18Raw -Dir $g18tP
+    $g18tRawB = Get-G18Raw -Dir $g18tB
+    $g18tRe = '"completed_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"'
+    $g18tFmtP = if ($g18tRawP -cmatch $g18tRe) { 'ok' } else { 'no' }
+    $g18tFmtB = if ($g18tRawB -cmatch $g18tRe) { 'ok' } else { 'no' }
+    Assert-Eq "18t: both halves emit the same completed_at format" "ok ok" "$g18tFmtP $g18tFmtB"
+    $g18tNormP = $g18tRawP -creplace '"completed_at":"[^"]*"', '"completed_at":"X"'
+    $g18tNormB = $g18tRawB -creplace '"completed_at":"[^"]*"', '"completed_at":"X"'
+    if ($g18tNormP -ceq $g18tNormB -and $g18tNormP) {
+        Write-Host "  PASS: 18t: both halves produce a byte-identical record" -ForegroundColor Green
+        $script:PASS++
+    } else {
+        Write-Host "  FAIL: 18t: the two halves produced different bytes" -ForegroundColor Red
+        Write-Host "    ps1:  $g18tNormP"
+        Write-Host "    bash: $g18tNormB"
+        $script:FAIL++
+    }
+}
+
+# 18u: the charset gate must agree with the bash twin on NON-ASCII input. .NET's
+# `A-Za-z0-9` ranges are strictly code-point based and refuse "é"; a bracket
+# RANGE in bash's `case` glob is collation-based and would accept it, so the
+# bash half enumerates its character set instead. Both halves must refuse here
+# — for a session id that is "unknown" on both sides, and for an identifier it
+# is no record at all on both sides.
+$g18u1 = New-G18Project 'u1'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 'abcé' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18u1
+Assert-Eq "18u: a non-ASCII session id is refused, not collated in" "unknown" (Get-G18Field -Dir $g18u1 -Name 'session_id')
+$g18u2 = New-G18Project 'u2'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data":{"id":99,"identifier":"W2147é","needs_review":false},"hooks":[{"name":"before_review"}]}') `
+    -Phase 'post' -ProjectDir $g18u2
+if (Test-G18StateExists -Dir $g18u2) {
+    Write-Host "  FAIL: 18u: a non-ASCII identifier must be refused outright, wrote: $(Get-G18Raw -Dir $g18u2)" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18u: a non-ASCII identifier is refused outright" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18v: `tool_response.stdout` carrying a JSON OBJECT rather than a string. The
+# bash twin resolves that field with `jq -r`, which re-serialises the object, so
+# it parses and records. Reading it here as [string] would render PowerShell's
+# "@{...}" form, fail to parse, record nothing, and announce an unparsable body
+# — the divergence ConvertTo-OwnCallText exists to close. Unreachable with
+# today's harness, which always sends stdout as a string, but this is the parse
+# boundary the task's pitfall names.
+$g18v = New-G18Project 'v'
+$g18vIn = [ordered]@{
+    session_id    = 'sess-obj'
+    tool_input    = @{ command = $G18CompleteCmd }
+    tool_response = @{ stdout = ($G18Ok | ConvertFrom-Json) }
+} | ConvertTo-Json -Compress -Depth 10
+$g18vRes = Invoke-HookScript -InputJson $g18vIn -Phase 'post' -ProjectDir $g18v
+Assert-Eq "18v: an object-shaped tool_response.stdout still records" "W2147" (Get-G18Field -Dir $g18v -Name 'identifier')
+Assert-Eq "18v: and its session id survives the same path" "sess-obj" (Get-G18Field -Dir $g18v -Name 'session_id')
+Assert-NotContains "18v: an object-shaped stdout is not announced as unparsable" 'unparsable' $g18vRes.Stderr
+
+# 18w: STREAM DISCIPLINE on the same branch 18v exercises. ConvertTo-Json emits
+# "Resulting JSON is truncated..." on the WARNING stream once a value nests
+# deeper than its -Depth, and pwsh writes WARNING to STDOUT — which would
+# corrupt the single JSON document this hook is contracted to emit, and diverge
+# from the bash twin, whose `jq` has no depth limit and writes nothing. The
+# fixture nests 120 deep, past ConvertTo-Json's maximum -Depth of 100, so the
+# guard is -WarningAction SilentlyContinue rather than the depth alone; 18v's
+# shallow fixture cannot reach this.
+#
+# The input is built as a STRING rather than via ConvertTo-Json, because the
+# test would otherwise hit the same 100 limit constructing its own fixture.
+$g18wDeep = ('{"n":' * 120) + '"leaf"' + ('}' * 120)
+$g18wStdout = '{"data":{"id":99,"identifier":"W2147","needs_review":false},' +
+              '"hooks":[{"name":"before_review"}],"deep":' + $g18wDeep + '}'
+$g18wIn = '{"session_id":"sess-deep","tool_input":{"command":"' + $G18CompleteCmd +
+          '"},"tool_response":{"stdout":' + $g18wStdout + '}}'
+$g18w = New-G18Project 'w'
+$g18wRes = Invoke-HookScript -InputJson $g18wIn -Phase 'post' -ProjectDir $g18w
+Assert-NotContains "18w: a deeply nested stdout emits no WARNING on stdout" 'WARNING' $g18wRes.Stdout
+Assert-NotContains "18w: nor any truncation notice on stdout" 'truncated' $g18wRes.Stdout
+Assert-Exit "18w: a deeply nested stdout does not fail the hook" 0 $g18wRes.ExitCode
+# The four fields all sit at depth 2, so they survive any truncation below them.
+Assert-Eq "18w: and the record is still correct" "W2147" (Get-G18Field -Dir $g18w -Name 'identifier')
+Assert-Eq "18w: including the session id" "sess-deep" (Get-G18Field -Dir $g18w -Name 'session_id')
+
+# ============================================================
+# Test Group 19: agentStop gate (W2148)
+# ============================================================
+# PowerShell mirror of test-stride-hook.sh Test Group 22.
+#
+# Cases that must NOT reach the network are pointed at a LIVE listener that
+# would otherwise block, never at a closed port: aiming them at a closed port
+# would let them reach exit 0 through the transport-failure branch and stay
+# green even with the short-circuit under test deleted.
+#
+# NOT MIRRORED, with the reason recorded so each gap reads as a decision:
+#   * 22t / 22u (missing jq, missing curl) — this half shells out to neither.
+#   * 22aa / 22p (bash source inspection) — replaced by 19aa, the PowerShell
+#     stdout-discipline equivalent.
+#   * 22z's runtime simulator and 22n's registration assertions — both are
+#     runtime- and file-level rather than per-half, so bash asserts them once
+#     for the pair rather than each half asserting the same JSON twice. 22o
+#     (the gate ships executable) and 22n2 (the live-registration SKIP) are
+#     file-level for the same reason.
+#   * 22d5 (an HTTP code of literally "000" from a successful call). This half
+#     calls Invoke-WebRequest, which either yields a StatusCode or throws, so
+#     there is no literal 000 to reach — the equivalent condition arrives as
+#     the catch's httpCode 0 and is covered by 19d.
+#   * The /dev/null counter divergence: bash refuses the character device at
+#     the pre-check, this half permits via the read-back. Both permit, both for
+#     bounding-related reasons, which is the invariant.
+Write-Host ""
+Write-Host "=== Test Group 19: agentStop gate (W2148) ==="
+
+$G19Gate = Join-Path $ScriptDir 'stride-stop-gate.ps1'
+$G19GateSh = Join-Path $ScriptDir 'stride-stop-gate.sh'
+$G19Token = 'NOT-A-REAL-TOKEN-g19-fixture'
+
+# Spawn a child pwsh so stdout and stderr are captured independently, and
+# REMOVE the gate's own control variables from the child environment — an
+# ambient STRIDE_ALLOW_STOP=1 would send every case down the escape hatch, and
+# "exit 0 with empty stdout" is exactly what that produces, so every permit
+# case would pass vacuously.
+function Invoke-G19Gate {
+    param([string]$Cwd, [hashtable]$Payload = $null, [hashtable]$Env = $null)
+    $doc = [ordered]@{ cwd = $Cwd; session_id = 'g19'; hook_event_name = 'Stop'; stop_reason = 'end_turn' }
+    if ($Payload) { foreach ($k in $Payload.Keys) { $doc[$k] = $Payload[$k] } }
+    $json = $doc | ConvertTo-Json -Compress -Depth 6
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = 'pwsh'
+    $psi.Arguments = "-NoProfile -File `"$G19Gate`""
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    foreach ($key in [System.Environment]::GetEnvironmentVariables('Process').Keys) {
+        $psi.Environment[$key] = [System.Environment]::GetEnvironmentVariable($key, 'Process')
+    }
+    foreach ($drop in @('STRIDE_ALLOW_STOP', 'STRIDE_STOP_GATE_MAX_BLOCKS', 'CLAUDE_PROJECT_DIR')) {
+        if ($psi.Environment.ContainsKey($drop)) { $null = $psi.Environment.Remove($drop) }
+    }
+    if ($Env) { foreach ($k in $Env.Keys) { $psi.Environment[$k] = [string]$Env[$k] } }
+
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.StandardInput.Write($json)
+    $proc.StandardInput.Close()
+    $out = $proc.StandardOutput.ReadToEnd()
+    $err = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    return @{ ExitCode = $proc.ExitCode; Stdout = $out; Stderr = $err }
+}
+
+function New-G19Project {
+    param([string]$Name, [string]$Url = 'https://api.example.invalid')
+    $d = Join-Path $TmpDir "g19-$Name"
+    if (Test-Path $d) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Path (Join-Path $d '.stride') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $d '.stride_auth.md') `
+        -Value "# auth`n`n- **API URL:** ``$Url```n- **API Token:** ``$G19Token```n" -Encoding UTF8
+    return $d
+}
+
+function Set-G19State {
+    param([string]$Dir, [string]$Ident, [bool]$NeedsReview)
+    $nr = if ($NeedsReview) { 'true' } else { 'false' }
+    Set-Content -LiteralPath (Join-Path $Dir '.stride/.loop-state.json') `
+        -Value "{`"identifier`":`"$Ident`",`"needs_review`":$nr,`"completed_at`":`"2026-01-01T00:00:00Z`",`"session_id`":`"g19`"}" `
+        -Encoding UTF8 -NoNewline
+}
+
+function Get-G19Decision {
+    param([string]$Stdout)
+    if (-not $Stdout) { return '' }
+    try { return [string](($Stdout | ConvertFrom-Json).decision) } catch { return '' }
+}
+
+# A real HttpListener on a rotating loopback port. Loopback is why the gate's
+# SSRF guard must permit 127.0.0.1 in cleartext.
+$G19Port = Get-Random -Minimum 24000 -Maximum 24900
+$G19Body = '{"data":{"id":1,"identifier":"W2148"}}'
+# The listener serves whatever body and status code the control files hold, so
+# a case can vary the RESPONSE SHAPE without standing up a new listener. This
+# is what lets Group 19 mirror Group 22's response-shape cases rather than
+# omitting them — in particular 19w2, which is the only test of the
+# TrimStart().StartsWith('{') guard the gate carries specifically to close a
+# cross-half parity divergence.
+$G19Ctl = Join-Path $TmpDir 'g19-ctl'
+New-Item -ItemType Directory -Path $G19Ctl -Force | Out-Null
+function Set-G19Response {
+    param([string]$Body, [int]$Code = 200)
+    Set-Content -LiteralPath (Join-Path $G19Ctl 'body.txt') -Value $Body -Encoding UTF8 -NoNewline
+    Set-Content -LiteralPath (Join-Path $G19Ctl 'code.txt') -Value ([string]$Code) -Encoding UTF8 -NoNewline
+}
+Set-G19Response -Body $G19Body -Code 200
+$G19Job = Start-Job -ScriptBlock {
+    param($port, $ctl)
+    $listener = [System.Net.HttpListener]::new()
+    $listener.Prefixes.Add("http://127.0.0.1:$port/")
+    $listener.Start()
+    try {
+        while ($true) {
+            $ctx = $listener.GetContext()
+            $b = ''
+            $c = 200
+            try { $b = [System.IO.File]::ReadAllText((Join-Path $ctl 'body.txt')) } catch { $b = '' }
+            try { $c = [int]([System.IO.File]::ReadAllText((Join-Path $ctl 'code.txt'))) } catch { $c = 200 }
+            $ctx.Response.StatusCode = $c
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($b)
+            $ctx.Response.ContentLength64 = $bytes.Length
+            $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+            $ctx.Response.OutputStream.Close()
+        }
+    } finally { $listener.Stop() }
+} -ArgumentList $G19Port, $G19Ctl
+
+try {
+    if (-not (Wait-ForListener -Port $G19Port -TimeoutSeconds 15)) {
+        Write-Host "  SKIP: Test Group 19 (the loopback listener did not come up)"
+    } else {
+        $G19Url = "http://127.0.0.1:$G19Port"
+
+        # --- The one block path ------------------------------------------
+        $d = New-G19Project 'a' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Exit "19a: the block path exits 0" 0 $r.ExitCode
+        Assert-Eq "19a: the decision is block" "block" (Get-G19Decision -Stdout $r.Stdout)
+        # 19a2: block, NOT Gemini's deny — the wrong token means no block at all.
+        Assert-NotContains "19a2: the decision is not the Gemini spelling" '"decision":"deny"' $r.Stdout
+        # 19b (AC4): the reason names the CLAIMABLE task, not the completed one.
+        Assert-Contains "19b: the reason names the claimable identifier" "W2148" $r.Stdout
+        Assert-NotContains "19b: the reason does not name the completed identifier" "W2147" $r.Stdout
+        # 19b2: exactly two keys, one line, and NOT the permission contract.
+        $g19Keys = ''
+        try { $g19Keys = ((($r.Stdout | ConvertFrom-Json).PSObject.Properties.Name) | Sort-Object) -join ' ' } catch { $g19Keys = '' }
+        Assert-Eq "19b2: stdout carries exactly the two documented keys" "decision reason" $g19Keys
+        Assert-Eq "19b2: stdout is exactly one non-empty line" "1" `
+            ([string](@($r.Stdout -split "`n" | Where-Object { $_.Trim() })).Count)
+        Assert-NotContains "19b2: the permission-request contract is not emitted" 'permissionDecision' $r.Stdout
+
+        # --- Permit branches, each asserting its OWN reason ---------------
+        # 19c: no loop-state file — a SILENT permit, so silence is what pins it.
+        $d = New-G19Project 'c' -Url $G19Url
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Exit "19c: no loop state exits 0" 0 $r.ExitCode
+        Assert-Eq "19c: no loop state writes nothing to stdout" "" $r.Stdout.Trim()
+        Assert-Eq "19c: no loop state is silent on stderr" "" $r.Stderr.Trim()
+        # POSITIVE CONTROL: one file away, the same fixture blocks.
+        Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Eq "19c: positive control - adding loop state blocks" "block" (Get-G19Decision -Stdout $r.Stdout)
+
+        # 19f: needs_review true
+        $d = New-G19Project 'f' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $true
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Eq "19f: needs_review true permits" "" $r.Stdout.Trim()
+        Assert-Contains "19f: and says the completed task needs review" 'the completed task needs human review' $r.Stderr
+
+        # 19f2: unparsable / not-an-object / non-boolean needs_review
+        $d = New-G19Project 'f2' -Url $G19Url
+        Set-Content -LiteralPath (Join-Path $d '.stride/.loop-state.json') -Value '{"identifier":"W2147", TRUNCA' -Encoding UTF8 -NoNewline
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19f2: an unparsable loop state is announced" 'the loop-state file could not be parsed' $r.Stderr
+        # A bare JSON STRING is a valid single document. This is the case the
+        # -is [PSCustomObject] test would wave through, since every PowerShell
+        # scalar is viewable as one.
+        Set-Content -LiteralPath (Join-Path $d '.stride/.loop-state.json') -Value '"just a string"' -Encoding UTF8 -NoNewline
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19f2: a non-object loop state reports the same reason" 'the loop-state file could not be parsed' $r.Stderr
+        Set-Content -LiteralPath (Join-Path $d '.stride/.loop-state.json') -Value '{"identifier":"W2147","needs_review":"false"}' -Encoding UTF8 -NoNewline
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19f2: a STRING needs_review is not a boolean false" 'records no usable needs_review' $r.Stderr
+
+        # 19f3: the completed identifier's three refusals, in the bash half's order
+        $d = New-G19Project 'f3' -Url $G19Url
+        Set-Content -LiteralPath (Join-Path $d '.stride/.loop-state.json') -Value '{"needs_review":false}' -Encoding UTF8 -NoNewline
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19f3: no completed identifier is announced" 'records no identifier' $r.Stderr
+        Set-Content -LiteralPath (Join-Path $d '.stride/.loop-state.json') -Value '{"identifier":"W 2147","needs_review":false}' -Encoding UTF8 -NoNewline
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19f3: a malformed completed identifier is refused" 'the completed identifier is not identifier-shaped' $r.Stderr
+        $g19Long = 'W' * 65
+        Set-Content -LiteralPath (Join-Path $d '.stride/.loop-state.json') -Value "{`"identifier`":`"$g19Long`",`"needs_review`":false}" -Encoding UTF8 -NoNewline
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19f3: an over-long completed identifier is refused" 'the completed identifier is longer than 64 characters' $r.Stderr
+
+        # 19d: an unreachable API. A closed port on loopback, so the SSRF guard
+        # still permits it through and the transport branch is what fires.
+        $d = New-G19Project 'd' -Url 'http://127.0.0.1:1'; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19d: a transport failure permits and says so" 'the API could not be reached' $r.Stderr
+
+        # 19d4 / 19y: a missing URL or token names the PAIR, never a value
+        $d = New-G19Project 'd4' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        Remove-Item -LiteralPath (Join-Path $d '.stride_auth.md') -Force
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19d4: no auth file permits" 'no API URL or token could be resolved' $r.Stderr
+        Set-Content -LiteralPath (Join-Path $d '.stride_auth.md') -Value "# auth`n`n- **API URL:** ``$G19Url```n" -Encoding UTF8
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19y: a URL with no token permits" 'no API URL or token could be resolved' $r.Stderr
+
+        # 19ad: the cleartext-http SSRF guard. Pointed at a host that is NOT
+        # loopback, and asserted to permit BEFORE any request is attempted.
+        $d = New-G19Project 'ad' -Url 'http://evil.example.com'; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19ad: cleartext http to a non-loopback host is refused" 'cleartext http to the non-loopback host evil.example.com' $r.Stderr
+        # A name that merely STARTS with 127. is an ordinary public domain.
+        $d = New-G19Project 'ad2' -Url 'http://127.0.0.1.evil.example.com'; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19ad: a 127-prefixed NAME is not loopback" 'cleartext http to the non-loopback host' $r.Stderr
+        # An unrecognised scheme
+        $d = New-G19Project 'ad3' -Url 'ftp://api.example.invalid'; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19ad2: an unrecognised scheme permits" 'no API URL or token could be resolved' $r.Stderr
+
+        # 19k: stop_hook_active short-circuits, silently, with no counter spend.
+        # Pointed at the LIVE listener, so a deleted short-circuit would BLOCK
+        # rather than fall through some other permit.
+        $d = New-G19Project 'k' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $r = Invoke-G19Gate -Cwd $d -Payload @{ stop_hook_active = $true }
+        Assert-Exit "19k: stop_hook_active exits 0" 0 $r.ExitCode
+        Assert-Eq "19k: stop_hook_active writes nothing to stdout" "" $r.Stdout.Trim()
+        Assert-Eq "19k: stop_hook_active is silent" "" $r.Stderr.Trim()
+        Assert-Eq "19k: and spends no counter budget" "absent" `
+            $(if (Test-Path -LiteralPath (Join-Path $d '.stride/.stop-gate-blocks')) { 'present' } else { 'absent' })
+        # POSITIVE CONTROL: without the flag, the same fixture blocks.
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Eq "19k: positive control - without the flag it blocks" "block" (Get-G19Decision -Stdout $r.Stdout)
+
+        # 19l: the operator escape hatch
+        $d = New-G19Project 'l' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $r = Invoke-G19Gate -Cwd $d -Env @{ STRIDE_ALLOW_STOP = '1' }
+        Assert-Eq "19l: STRIDE_ALLOW_STOP=1 permits" "" $r.Stdout.Trim()
+        Assert-Contains "19l: and says so" 'STRIDE_ALLOW_STOP=1 was set' $r.Stderr
+
+        # --- The bounded counter ------------------------------------------
+        # 19h: default budget 2 — block, block, then permit.
+        $d = New-G19Project 'h' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $h1 = Get-G19Decision -Stdout (Invoke-G19Gate -Cwd $d).Stdout
+        $h2 = Get-G19Decision -Stdout (Invoke-G19Gate -Cwd $d).Stdout
+        $r3 = Invoke-G19Gate -Cwd $d
+        $h3 = Get-G19Decision -Stdout $r3.Stdout
+        if (-not $h3) { $h3 = 'permit' }
+        Assert-Eq "19h: the default budget blocks twice then permits" "block block permit" "$h1 $h2 $h3"
+        Assert-Contains "19h: and says the budget is spent" 'the re-block budget for this completion is spent' $r3.Stderr
+        # 19r: a fourth end still permits, and the spent record is RETAINED —
+        # deleting it would cycle 2,2,0,2,2,0 forever.
+        $r4 = Invoke-G19Gate -Cwd $d
+        Assert-Eq "19r: a fourth end still permits" "" $r4.Stdout.Trim()
+        Assert-Eq "19r: the spent record is retained, not deleted" "present" `
+            $(if (Test-Path -LiteralPath (Join-Path $d '.stride/.stop-gate-blocks')) { 'present' } else { 'absent' })
+        # 19h2: a NEW completion re-keys the counter and earns a fresh budget.
+        Set-G19State -Dir $d -Ident 'W2199' -NeedsReview $false
+        Assert-Eq "19h2: a new completed identifier earns a fresh budget" "block" `
+            (Get-G19Decision -Stdout (Invoke-G19Gate -Cwd $d).Stdout)
+        # 19h3: clearing the loop state clears the counter.
+        Remove-Item -LiteralPath (Join-Path $d '.stride/.loop-state.json') -Force
+        $null = Invoke-G19Gate -Cwd $d
+        Assert-Eq "19h3: clearing loop state clears the counter" "absent" `
+            $(if (Test-Path -LiteralPath (Join-Path $d '.stride/.stop-gate-blocks')) { 'present' } else { 'absent' })
+
+        # 19q: a malformed budget override falls back to 2 and NEVER wedges.
+        foreach ($bad in @('off', '9999999999')) {
+            $d = New-G19Project "q-$bad" -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+            $seq = @()
+            foreach ($i in 1..3) {
+                $dec = Get-G19Decision -Stdout (Invoke-G19Gate -Cwd $d -Env @{ STRIDE_STOP_GATE_MAX_BLOCKS = $bad }).Stdout
+                if (-not $dec) { $dec = 'permit' }
+                $seq += $dec
+            }
+            Assert-Eq "19q: STRIDE_STOP_GATE_MAX_BLOCKS=$bad falls back to 2, never wedges" `
+                "block block permit" ($seq -join ' ')
+        }
+
+        # 19ac: a counter destination that is not a regular file is refused
+        # rather than blocking uncounted — a wedged session is worse than a
+        # missed gate.
+        $d = New-G19Project 'ac' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        New-Item -ItemType Directory -Path (Join-Path $d '.stride/.stop-gate-blocks') -Force | Out-Null
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Eq "19ac: a directory counter permits rather than blocking uncounted" "" $r.Stdout.Trim()
+        Assert-Contains "19ac: and says the block could not be bounded" 'could not be bounded' $r.Stderr
+
+        # 19af: a counter that is a SYMLINK is refused. Test-Path -PathType Leaf
+        # is TRUE for a link to a regular file and Set-Content FOLLOWS it,
+        # truncating the target — anywhere the agent user can write. Test-Path
+        # is unusable for the dangling case because it resolves the link and
+        # reports false, after which Set-Content would create the target
+        # outright, so the guard reads the ReparsePoint attribute with -Force.
+        # The victim file is the assertion; the control proves the gate reached
+        # the counter guard rather than permitting earlier.
+        $d = New-G19Project 'af' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        Assert-Eq "19af: control - the fixture reaches the counter and blocks" "block" `
+            (Get-G19Decision -Stdout (Invoke-G19Gate -Cwd $d).Stdout)
+        Remove-Item -LiteralPath (Join-Path $d '.stride/.stop-gate-blocks') -Force -ErrorAction SilentlyContinue
+        $g19Victim = Join-Path $d 'victim.txt'
+        Set-Content -LiteralPath $g19Victim -Value 'PRECIOUS' -Encoding UTF8 -NoNewline
+        $null = New-Item -ItemType SymbolicLink -Path (Join-Path $d '.stride/.stop-gate-blocks') -Target $g19Victim -Force
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Eq "19af: a symlinked counter permits rather than following the link" "" $r.Stdout.Trim()
+        Assert-Contains "19af: and says the counter is a symbolic link" 'the block counter is a symbolic link' $r.Stderr
+        Assert-Eq "19af: the symlink target is NOT truncated" "PRECIOUS" `
+            ((Get-Content -LiteralPath $g19Victim -Raw -ErrorAction SilentlyContinue))
+        # A dangling link must not be followed into existence either.
+        Remove-Item -LiteralPath (Join-Path $d '.stride/.stop-gate-blocks') -Force -ErrorAction SilentlyContinue
+        $g19Absent = Join-Path $d 'victim-absent.txt'
+        $null = New-Item -ItemType SymbolicLink -Path (Join-Path $d '.stride/.stop-gate-blocks') -Target $g19Absent -Force
+        $null = Invoke-G19Gate -Cwd $d
+        Assert-Eq "19af: a dangling symlink target is never created" "absent" `
+            $(if (Test-Path -LiteralPath $g19Absent) { 'present' } else { 'absent' })
+        Remove-Item -LiteralPath (Join-Path $d '.stride/.stop-gate-blocks') -Force -ErrorAction SilentlyContinue
+
+        # --- Security ------------------------------------------------------
+        # 19i: the token never reaches stdout OR stderr, on any response shape.
+        foreach ($case in @(@{ n = 'live'; u = $G19Url }, @{ n = 'closed'; u = 'http://127.0.0.1:1' })) {
+            $d = New-G19Project ('i-' + $case.n) -Url $case.u; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+            $r = Invoke-G19Gate -Cwd $d
+            Assert-NotContains ("19i: the token never reaches stdout (" + $case.n + ")") $G19Token $r.Stdout
+            Assert-NotContains ("19i: the token never reaches stderr (" + $case.n + ")") $G19Token $r.Stderr
+        }
+
+        # --- AC3 / AC5 -----------------------------------------------------
+        # 19z2: block and every permit alike exit 0.
+        $d = New-G19Project 'z2' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+        $e1 = (Invoke-G19Gate -Cwd $d).ExitCode
+        Remove-Item -LiteralPath (Join-Path $d '.stride/.loop-state.json') -Force
+        $e2 = (Invoke-G19Gate -Cwd $d).ExitCode
+        Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $true
+        $e3 = (Invoke-G19Gate -Cwd $d).ExitCode
+        Assert-Eq "19z2: block and every permit alike exit 0" "0 0 0" "$e1 $e2 $e3"
+
+
+        # --- Response-shape branches, mirroring Group 22 ------------------
+        # These were previously absent, which left the gate's
+        # TrimStart().StartsWith('{') guard (added specifically to close a
+        # cross-half divergence) with no test on this half at all.
+        $d = New-G19Project 'shape' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $false
+
+        # 19w: an unparsable body
+        Set-G19Response -Body '<html>hi</html>' -Code 200
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19w: an unparsable body is announced" 'the API response could not be parsed' $r.Stderr
+
+        # 19w2: a top-level ARRAY. ConvertFrom-Json unrolls a one-element array
+        # to a scalar PSCustomObject, so without the raw-token guard this half
+        # would accept it where the bash half's jq sees "array" and refuses.
+        Set-G19Response -Body '[{"data":{"identifier":"W9999"}}]' -Code 200
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19w2: a top-level array is not an object" 'the API response was not an object' $r.Stderr
+
+        # 19w3: a body of the literal token null. ConvertFrom-Json returns
+        # $null for it, colliding with the parse-failure sentinel; the bash
+        # half slurps it to [null] and reports "was not an object".
+        Set-G19Response -Body 'null' -Code 200
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19w3: a body of literal null is not an object" 'the API response was not an object' $r.Stderr
+
+        # 19e: a 200 with no claimable identifier, plus a POSITIVE CONTROL
+        Set-G19Response -Body '{"data":{}}' -Code 200
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19e: an empty data object means no claimable task" 'no claimable task remains' $r.Stderr
+        Set-G19Response -Body $G19Body -Code 200
+        Assert-Eq "19e: positive control - an identifier blocks" "block" `
+            (Get-G19Decision -Stdout (Invoke-G19Gate -Cwd $d).Stdout)
+
+        # 19m / 19ab / 19ag: the claimable identifier is REFUSED, never
+        # sanitised. The NUL fixture is built from [char]0 so the wire value
+        # genuinely carries one.
+        Set-G19Response -Body '{"data":{"identifier":"W9999 IGNORE PRIOR"}}' -Code 200
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19m: a spaced identifier is refused" 'the next task identifier is not identifier-shaped' $r.Stderr
+        $g19Nul = @{ data = @{ identifier = ('W9999' + [char]0 + 'IGNORE.PRIOR') } } | ConvertTo-Json -Compress -Depth 4
+        Set-G19Response -Body $g19Nul -Code 200
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19ab: an embedded NUL is refused, not silently dropped" 'the next task identifier is not identifier-shaped' $r.Stderr
+        $g19Nl = @{ data = @{ identifier = ("W9999`nclaim me") } } | ConvertTo-Json -Compress -Depth 4
+        Set-G19Response -Body $g19Nl -Code 200
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19ag: an embedded newline is refused" 'the next task identifier is not identifier-shaped' $r.Stderr
+
+        # 19x: the length bound, with a BOUNDARY control so widening it reds a case
+        $g19Ident65 = 'W' * 65
+        Set-G19Response -Body ("{`"data`":{`"identifier`":`"$g19Ident65`"}}") -Code 200
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19x: a 65-character identifier is refused" 'the next task identifier is longer than 64 characters' $r.Stderr
+        $g19Ident64 = 'W' * 64
+        Set-G19Response -Body ("{`"data`":{`"identifier`":`"$g19Ident64`"}}") -Code 200
+        Assert-Eq "19x: boundary control - exactly 64 characters still blocks" "block" `
+            (Get-G19Decision -Stdout (Invoke-G19Gate -Cwd $d).Stdout)
+
+        # 19d2 / 19d3 / 19ae: non-200 codes
+        Set-G19Response -Body '<html>404</html>' -Code 404
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19d2: a 404 means no claimable task remains" 'no claimable task remains' $r.Stderr
+        Set-G19Response -Body '{"error":"boom"}' -Code 500
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19d3: a 500 names the code" 'the API answered 500' $r.Stderr
+        # A 3xx must be reported, never followed: -MaximumRedirection 0 is what
+        # keeps the Authorization header from reaching a Location-named host on
+        # Windows PowerShell 5.1, which preserves it across an auto-redirect.
+        Set-G19Response -Body '' -Code 301
+        $r = Invoke-G19Gate -Cwd $d
+        Assert-Contains "19ae: a 301 is reported, never followed" 'the API answered 301' $r.Stderr
+        Set-G19Response -Body $G19Body -Code 200
+
+        # 19f4: a loop state that is a one-element top-level ARRAY. Same
+        # ConvertFrom-Json unrolling as 19w2, on the path where it would cause a
+        # DECISION divergence rather than a reason one: without the raw-token
+        # guard this half would BLOCK where the bash half permits.
+        $d2 = New-G19Project 'f4' -Url $G19Url
+        Set-Content -LiteralPath (Join-Path $d2 '.stride/.loop-state.json') `
+            -Value '[{"identifier":"W2147","needs_review":false}]' -Encoding UTF8 -NoNewline
+        $r = Invoke-G19Gate -Cwd $d2
+        Assert-Eq "19f4: an array-wrapped loop state permits, never blocks" "" $r.Stdout.Trim()
+        Assert-Contains "19f4: and reports the same reason as the bash half" 'the loop-state file could not be parsed' $r.Stderr
+
+        # 19h4: an unwritable .stride permits rather than blocking uncounted.
+        # POSIX-only; bash 22h4 covers the same branch everywhere.
+        # Also skipped as root: mode bits do not restrain root, so the write
+        # succeeds and the gate blocks — indistinguishable from the positive
+        # control, so no assertion here could detect it.
+        $g19IsRoot = $false
+        if (-not $IsWindows) { try { $g19IsRoot = ((& id -u) -eq '0') } catch { $g19IsRoot = $false } }
+        if ($IsWindows -or $g19IsRoot) {
+            Write-Host "  SKIP: 19h4 (POSIX permissions, or running as root - bash 22h4 covers this branch)"
+        } else {
+            $d3 = New-G19Project 'h4' -Url $G19Url; Set-G19State -Dir $d3 -Ident 'W2147' -NeedsReview $false
+            Assert-Eq "19h4: positive control - the fixture blocks while writable" "block" `
+                (Get-G19Decision -Stdout (Invoke-G19Gate -Cwd $d3).Stdout)
+            Remove-Item -LiteralPath (Join-Path $d3 '.stride/.stop-gate-blocks') -Force -ErrorAction SilentlyContinue
+            & chmod 555 (Join-Path $d3 '.stride') 2>$null
+            $r = Invoke-G19Gate -Cwd $d3
+            & chmod 755 (Join-Path $d3 '.stride') 2>$null
+            Assert-Eq "19h4: an unwritable .stride permits" "" $r.Stdout.Trim()
+            # The PRECISE branch wording, matching the bash twin. "cannot be
+            # bounded" appears in TWO branches (the write failure and the
+            # read-back mismatch), so the loose needle would stay green if the
+            # wrong one fired — the defect fixed on the bash half, which must
+            # not be left standing here.
+            Assert-Contains "19h4: and names the counter-write branch specifically" `
+                'the block count could not be recorded' $r.Stderr
+            Assert-NotContains "19h4: and not the read-back branch's wording" 'did not persist' $r.Stderr
+            Assert-NotContains "19h4: and not the directory-creation branch's wording" 'could not be created' $r.Stderr
+        }
+
+
+        # 19h1: the default budget is 2, and 2 is below Copilot's own 8-block
+        # cap, so the runtime override can never fire in normal operation.
+        # Previously asserted only on the bash half (22h1) — the reverse of the
+        # asymmetry 19ad2 had, and the same pitfall.
+        # ANCHORED, not Contains: String.Contains('$StopGateMaxBlocks = 2') also
+        # matches a gate whose default was changed to 20 or 25, so the naive
+        # form is strictly weaker than the bash twin's anchored grep and would
+        # not go red under the very mutation it exists to catch.
+        $g19GateLines = @(Get-Content -LiteralPath $G19Gate)
+        Assert-Eq "19h1: the gate's default budget is exactly 2" "1" `
+            ([string](@($g19GateLines | Where-Object { $_ -cmatch '\A\$StopGateMaxBlocks = 2\z' })).Count)
+
+        # UNCOVERED, recorded rather than faked — matching the bash half:
+        #   * "the .stride directory could not be created" is STRUCTURALLY
+        #     UNREACHABLE. The gate returns when the loop-state file is absent,
+        #     and that file lives inside .stride, so any run reaching the later
+        #     directory creation has already proved it exists. Only a TOCTOU
+        #     race could fire it.
+        #   * "the block count did not persist" needs a write that reports
+        #     success yet does not persist, which cannot be staged without
+        #     mocking the filesystem.
+        #   * The top-level `trap` permit ("unexpected error; permitting the
+        #     turn end") is a ps1-only backstop for an unanticipated
+        #     terminating error. Every error path the gate anticipates is
+        #     guarded before it, so reaching the trap requires a fault no
+        #     fixture can inject without editing the gate.
+        # Only the FIRST TWO are asserted negatively, by 19h4's two
+        # Assert-NotContains ('could not be created' and 'did not persist').
+        # The trap's own wording is asserted by neither, so it is recorded but
+        # not pinned in either direction. Those negatives also live inside
+        # 19h4's Windows/root skip, so on either of those runs they are absent
+        # as well.
+
+        # 19ag2: the fixture root is 0700 on POSIX, matching what `mktemp -d`
+        # gives the bash half. Without this the fixtures' .stride_auth.md files
+        # are world-readable for the life of the run — harmless with sentinel
+        # tokens, but a local-disclosure path the moment one is not. Pinned
+        # with a case because the hardening otherwise sits in the harness with
+        # nothing to stop a future edit dropping it silently.
+        if ($IsWindows) {
+            Write-Host "  SKIP: 19ag2 (POSIX permissions - the Windows temp path is already per-user)"
+        } else {
+            $g19Mode = (& stat -f '%Lp' $TmpDir 2>$null)
+            if (-not $g19Mode) { $g19Mode = (& stat -c '%a' $TmpDir 2>$null) }
+            Assert-Eq "19ag2: the fixture root is 0700, matching the bash half" "700" ([string]$g19Mode)
+        }
+
+        # 19aa: stdout discipline, structurally — PowerShell's IMPLICIT PIPELINE
+        # OUTPUT is the live hazard on this half, so these are asserted over the
+        # source with comments stripped (the header names each guard in prose).
+        $g19Src = (Get-Content -LiteralPath $G19Gate) | Where-Object { $_ -notmatch '^\s*#' }
+        Assert-Eq "19aa: exactly one Write-Output in the gate" "1" `
+            ([string](@($g19Src | Where-Object { $_ -match 'Write-Output' })).Count)
+        Assert-Eq "19aa: zero Write-Host / Write-Information / Write-Verbose" "0" `
+            ([string](@($g19Src | Where-Object { $_ -match 'Write-Host|Write-Information|Write-Verbose' })).Count)
+        Assert-Eq "19aa: no CODE path exits 2" "0" `
+            ([string](@($g19Src | Where-Object { $_ -match 'exit 2' })).Count)
+        Assert-Eq "19aa: New-Item is piped to Out-Null" "0" `
+            ([string](@($g19Src | Where-Object { $_ -match 'New-Item' -and $_ -notmatch 'Out-Null' })).Count)
+        Assert-Eq "19aa: Set-Content never uses -PassThru" "0" `
+            ([string](@($g19Src | Where-Object { $_ -match 'Set-Content' -and $_ -match '-PassThru' })).Count)
+
+        # 19ah: cross-half parity of the permit reasons, byte for byte. The two
+        # halves must not drift by eye. The needs-review permit needs no network.
+        $g19Bash = Get-Command bash -ErrorAction SilentlyContinue
+        if (-not $g19Bash) {
+            Write-Host "  SKIP: 19ah (cross-half reason parity - bash is not available)"
+        } else {
+            $d = New-G19Project 'ah' -Url $G19Url; Set-G19State -Dir $d -Ident 'W2147' -NeedsReview $true
+            $psErr = (Invoke-G19Gate -Cwd $d).Stderr
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = 'bash'
+            $psi.Arguments = "`"$G19GateSh`""
+            $psi.RedirectStandardInput = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $p = [System.Diagnostics.Process]::Start($psi)
+            $p.StandardInput.Write("{`"cwd`":`"$d`"}")
+            $p.StandardInput.Close()
+            $null = $p.StandardOutput.ReadToEnd()
+            $shErr = $p.StandardError.ReadToEnd()
+            $p.WaitForExit()
+            Assert-Eq "19ah: both halves report the needs-review permit identically" $shErr.Trim() $psErr.Trim()
+        }
+    }
+} finally {
+    Remove-Job $G19Job -Force -ErrorAction SilentlyContinue
 }
 
 # ============================================================
