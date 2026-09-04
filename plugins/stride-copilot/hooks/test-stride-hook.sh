@@ -36,7 +36,13 @@ assert_eq() {
 
 assert_contains() {
   local label="$1" needle="$2" haystack="$3"
-  if echo "$haystack" | grep -qF "$needle"; then
+  # Herestring, not a pipe. `grep -q` exits at the first match and closes the
+  # pipe, which SIGPIPEs a writer still pushing a large haystack — and under
+  # this file's `set -o pipefail` that turns a genuine MATCH into status 141,
+  # failing the assertion. It only bites past the ~64KB pipe buffer, which is
+  # why 22 groups of small fixtures never saw it and Group 23's whole-contract
+  # haystacks did (found while writing W2155).
+  if grep -qF -- "$needle" <<< "$haystack"; then
     echo -e "  ${GREEN}PASS${RESET}: $label"
     PASS=$((PASS + 1))
   else
@@ -5393,6 +5399,805 @@ G22NAIVE
   fi
 fi
 
+# ============================================================
+# Test Group 23: two-round review cap (W2155)
+# ============================================================
+# Mirrored case-for-case by test-stride-hook.ps1 Test Group 20.
+#
+# WHAT THESE CASES PROVE, AND WHAT THEY DO NOT. The cap this group covers is
+# PROSE, not a pin: nothing in stride-copilot refuses a third reviewer
+# dispatch, because no hook can observe an agent dispatch and no counter file
+# exists. So these cases pin that the rule is STATED, stated ONCE, stated in
+# the right place, and not contradicted elsewhere in the port. They cannot and
+# do not verify that the rule is OBEYED at runtime. Read a green Group 23 as
+# "the contract says the right thing", never as "the cap is enforced".
+#
+# NOT PORTED, recorded so the omissions read as decisions:
+#   * The reference's executed half. Stride's Group 36 awk-extracts its
+#     round_cap_ok jq out of review-block-extraction.md and evals it, so the
+#     test runs the contract's own bytes rather than a retyping of them.
+#     Copilot ships NO executable check to extract — the cap is prose — so
+#     there is nothing to extract and no executed half is faked here.
+#     Hand-INVENTING check logic to have an executed half would be W2127's
+#     defect in a new costume: there, 25 hand-retyped assertions went green
+#     over a real defect precisely because they tested the retyping.
+#   * Any assertion on round COUNTING. The count lives in the orchestrator's
+#     context and touches no file, so it has no observable surface to assert
+#     against. That is a stated limit of the design, not a gap in the suite.
+echo ""
+echo "=== Test Group 23: two-round review cap (W2155) ==="
+
+G23_ROOT="$SCRIPT_DIR/.."
+G23_WF="$G23_ROOT/skills/stride-workflow/SKILL.md"
+G23_SUB="$G23_ROOT/skills/stride-subagent-workflow/SKILL.md"
+G23_CT="$G23_ROOT/skills/stride-completing-tasks/SKILL.md"
+G23_RV="$G23_ROOT/agents/task-reviewer.agent.md"
+
+if [ ! -f "$G23_WF" ] || [ ! -f "$G23_SUB" ] || [ ! -f "$G23_CT" ] || [ ! -f "$G23_RV" ]; then
+  echo "  SKIP: Test Group 23 (contract files not found relative to $SCRIPT_DIR)"
+else
+  G23_WF_TXT=$(cat "$G23_WF")
+  G23_SUB_TXT=$(cat "$G23_SUB")
+  G23_CT_TXT=$(cat "$G23_CT")
+  G23_RV_TXT=$(cat "$G23_RV")
+
+  # Every markdown contract in the port, enumerated with find rather than a
+  # recursive grep: the grep on a developer machine may be ugrep, which honors
+  # .gitignore during directory traversal and would silently scan nothing.
+  # Read into an ARRAY, never a word-split string: this file sets `set -uo
+  # pipefail` but not `set -f`, so a future markdown filename containing a space
+  # or a glob character would silently shrink the scanned set — and because the
+  # sweeps below are exactly-zero and exactly-one assertions, a shrunken set
+  # makes them PASS rather than fail.
+  G23_MD=()
+  while IFS= read -r g23f; do G23_MD+=("$g23f"); done \
+    < <(find "$G23_ROOT/skills" "$G23_ROOT/agents" -name '*.md' -type f 2>/dev/null | sort)
+  G23_ALL_TXT=$(cat "${G23_MD[@]}" 2>/dev/null || true)
+
+  # Literal OCCURRENCE count — deliberately not `grep -c`, which counts matching
+  # LINES. The PowerShell twin counts occurrences via [regex]::Matches().Count,
+  # and two needles on one line would make the mirrored cases assert different
+  # propositions. `|| true` because grep exits 1 on no match under pipefail.
+  g23_count() {
+    { grep -oF -- "$2" <<< "$1" || true; } | grep -c . || true
+  }
+
+  # --- The ceiling itself (AC 1, verification step 1) ---
+  assert_contains "23a: the ceiling is stated in the port's review step" \
+    "Two review rounds is the ceiling, and the second verifies rather than re-reviews." \
+    "$G23_WF_TXT"
+
+  assert_contains "23b: carries the canon back-reference anchor" \
+    "<!-- canon:review-round-cap v1 -->" "$G23_WF_TXT"
+
+  # Structural: the anchor must sit on the line immediately above the sentence
+  # it governs. A bare presence check passes even after the anchor drifts to
+  # some unrelated paragraph, which is exactly how a back-reference rots.
+  G23_ANCHOR_LN=$(grep -nF "<!-- canon:review-round-cap v1 -->" "$G23_WF" | head -1 | cut -d: -f1)
+  G23_CEIL_LN=$(grep -nF "Two review rounds is the ceiling" "$G23_WF" | head -1 | cut -d: -f1)
+  assert_eq "23c: the anchor sits immediately above the ceiling sentence" \
+    "1" "$((G23_CEIL_LN - G23_ANCHOR_LN))"
+
+  # --- The round definition, in surfaces this port actually has (AC 2) ---
+  assert_contains "23d: a crashed or unparsable dispatch consumes no round" \
+    "consumes no round" "$G23_WF_TXT"
+  assert_contains "23d: and the threshold is the parse, not the attempt" \
+    "parsable" "$G23_WF_TXT"
+  assert_contains "23d: the definition is anchored on the extraction step" \
+    "IS a completed review round" "$G23_SUB_TXT"
+
+  # AC 2 negative. The port carries neither artifact, so each name may appear
+  # ONLY as a prohibition against importing it — never as a live mechanism.
+  # A second occurrence means someone started depending on a file that does
+  # not exist here.
+  G23_MERGED_LINES=$(grep -hF '$MERGED' "${G23_MD[@]}" 2>/dev/null || true)
+  assert_eq "23e: \$MERGED named exactly once in the port" \
+    "1" "$(g23_count "$G23_ALL_TXT" '$MERGED')"
+  assert_contains "23e: and only as a prohibition, never as a mechanism" \
+    "do not import" "$G23_MERGED_LINES"
+
+  G23_ROUNDS_LINES=$(grep -hF '.review-rounds-' "${G23_MD[@]}" 2>/dev/null || true)
+  assert_eq "23e: the round-counter file named exactly once" \
+    "1" "$(g23_count "$G23_ALL_TXT" '.review-rounds-')"
+  assert_contains "23e: and only as a prohibition, never as a mechanism" \
+    "do not import" "$G23_ROUNDS_LINES"
+
+  # --- Round two: mission scoped, evidence not (AC 3) ---
+  assert_contains "23f: round two still receives the full diff" \
+    "still receives the full diff" "$G23_WF_TXT"
+  assert_contains "23g: round two verifies rather than re-reviews" \
+    "verifies rather than re-reviews" "$G23_WF_TXT"
+  assert_contains "23h: the scoping rule is stated in the review step" \
+    "Scoping changes what you look for, never what you emit" "$G23_WF_TXT"
+  assert_contains "23h: and in the reviewer's own contract" \
+    "Scoping changes what you look for, never what you emit" "$G23_RV_TXT"
+
+  # --- After round two: record, do not fix (AC 4) ---
+  assert_contains "23i: remaining non-Critical findings are recorded, not fixed" \
+    "RECORDED, not fixed" "$G23_WF_TXT"
+  assert_contains "23i: recorded by severity, category and file:line only" \
+    "severity, category and \`file:line\`" "$G23_WF_TXT"
+
+  # --- Critical is exempt and always blocks (AC 5) ---
+  assert_contains "23j: a critical is exempt from the cap" \
+    "exempt from the cap" "$G23_WF_TXT"
+  assert_contains "23j: and blocks at any round number" \
+    "always blocks, at any round number" "$G23_WF_TXT"
+  assert_contains "23k: the unfixable-Critical exit is named" \
+    "review_blocked" "$G23_WF_TXT"
+  assert_contains "23k: with its failure kind" \
+    "review_escalation" "$G23_WF_TXT"
+  # The manual test's target: a Critical found late must not be stranded by
+  # the ceiling. Pin the sentence that says so, not merely the exemption.
+  assert_contains "23k: a late Critical is explicitly not stranded" \
+    "never stranded by the ceiling" "$G23_WF_TXT"
+
+  # --- A security issue is never recordable, at any severity (AC 6) ---
+  assert_contains "23l: the security carve-out is in the review step" \
+    "A security finding is never recorded" "$G23_WF_TXT"
+  assert_contains "23m: and in the completion self-check (verification step 2)" \
+    "A security finding is never recorded, at any severity" "$G23_CT_TXT"
+
+  # --- The hard gate carries the cap, inside the gate (AC 6 placement) ---
+  assert_contains "23n: the self-check has a rounds-within-cap bullet" \
+    "Review rounds are within the cap" "$G23_CT_TXT"
+
+  # Structural: presence in the file is not presence in the GATE. Pin that the
+  # bullet falls between the gate's heading and its closing paragraph.
+  G23_GATE_LN=$(grep -nF "MANDATORY pre-submission self-check (hard gate)" "$G23_CT" | head -1 | cut -d: -f1)
+  G23_BULLET_LN=$(grep -nF "Review rounds are within the cap" "$G23_CT" | head -1 | cut -d: -f1)
+  G23_CLOSE_LN=$(grep -nF "This gate is **not bypassable**" "$G23_CT" | head -1 | cut -d: -f1)
+  if [ "$G23_GATE_LN" -lt "$G23_BULLET_LN" ] && [ "$G23_BULLET_LN" -lt "$G23_CLOSE_LN" ]; then
+    G23_INSIDE="inside"
+  else
+    G23_INSIDE="outside (gate=$G23_GATE_LN bullet=$G23_BULLET_LN close=$G23_CLOSE_LN)"
+  fi
+  assert_eq "23o: the bullet sits inside the hard gate, not merely in the file" \
+    "inside" "$G23_INSIDE"
+
+  # --- Prose or pin? Say which (AC 7) ---
+  assert_contains "23p: the enforcement class is stated, not left implied" \
+    "This cap is stated, not mechanically enforced." "$G23_WF_TXT"
+  assert_contains "23p: the self-check bullet says so too" \
+    "This bullet is a self-report, not a pin" "$G23_CT_TXT"
+  assert_contains "23u: an unestablishable round number fails closed" \
+    "treat the next dispatch as round two" "$G23_WF_TXT"
+
+  # --- The contradiction that existed before W2155 is closed ---
+  # The old bullet ended at the hook with nothing bounding it. Exact-line match
+  # (-x): the amended bullet still STARTS with that text, so a substring test
+  # would keep passing after the amendment and pin nothing.
+  assert_eq "23q: the unbounded re-review bullet is gone" \
+    "0" \
+    "$(grep -cxF -- '- After fixing, you do NOT need to re-run the reviewer — proceed to the after_doing hook' "$G23_SUB" || true)"
+
+  # ...but the clause itself must survive, because Phase 3.5 quotes it verbatim
+  # ("a deliberate exception to Phase 3's ..."). Two occurrences: the bullet
+  # and the citation. Rewriting the phrase would dangle the citation.
+  assert_eq "23r: the quoted clause survives in both the bullet and its citation" \
+    "2" "$(g23_count "$G23_SUB_TXT" 'fixing, you do NOT need to re-run the reviewer')"
+
+  assert_contains "23s: the issues-found bullets defer to the ceiling" \
+    "the two-round ceiling in \`stride-workflow\` Step 5" "$G23_SUB_TXT"
+  assert_contains "23v: the D66 re-review paragraph points at the ceiling" \
+    "bounded by the two-round ceiling in Step 5 above" "$G23_WF_TXT"
+
+  # --- The reviewer's round-two input contract ---
+  assert_contains "23t: review_round is an optional reviewer input" \
+    "\`review_round\`" "$G23_RV_TXT"
+  assert_contains "23t: and absent means round 1" \
+    "absent means round 1" "$G23_RV_TXT"
+
+  # --- Single source: the ceiling is stated ONCE and cross-referenced ---
+  # Every other site defers. A second statement is how two copies drift apart,
+  # which is the D221 failure mode this port has already been bitten by.
+  assert_eq "23w: the ceiling sentence appears exactly once in the port" \
+    "1" "$(g23_count "$G23_ALL_TXT" 'Two review rounds is the ceiling')"
+
+  # --- Dispatches that are NOT rounds (round-two fix) ---
+  # The cap bounds the find-and-fix loop over one diff. Three dispatches are
+  # outside it, and each was a live deadlock before it was a paragraph.
+  assert_contains "23z: the non-round carve-out is stated" \
+    "Three dispatches are NOT rounds" "$G23_WF_TXT"
+  assert_contains "23z: the harden re-review is one of them" \
+    "Step 5.6's re-review requirement stands and this cap never overrides it" "$G23_WF_TXT"
+  assert_contains "23z: so is a repair demanded by the completion self-check" \
+    "A repair dispatch demanded by the completion self-check" "$G23_WF_TXT"
+  # ...and it must not become a way to buy rounds.
+  assert_contains "23z: non-round dispatches are scoped, not a round budget" \
+    "so this is not a way to buy rounds" "$G23_WF_TXT"
+  # The harden step and the gate must each carry the deference locally — a
+  # reader who lands there and never returns to Step 5 still gets it right.
+  assert_contains "23aa: the harden step says the ceiling does not bound it" \
+    "the review-round ceiling in Step 5 does NOT bound this dispatch" "$G23_WF_TXT"
+  assert_contains "23aa: and Phase 3.6 says it too" \
+    "NOT bounded by the review-round ceiling" "$G23_SUB_TXT"
+  assert_contains "23aa: and the completion gate says a repair re-run is not a round" \
+    "is a repair dispatch, not a review round" "$G23_CT_TXT"
+
+  # --- The security rule stands OUTSIDE the cap (round-two fix) ---
+  # It was previously grammatically inside the "after round two" disposition,
+  # so it never fired on the single-round path — which the port makes the
+  # default. Pin that it is unconditional at every site, and that the
+  # neighbouring "minor issues are optional" bullet excludes it.
+  assert_contains "23ab: the security rule is not conditioned on the round" \
+    "at any severity, at any round number, including round one" "$G23_WF_TXT"
+  assert_contains "23ab: it stands outside the cap explicitly" \
+    "This rule stands outside the cap entirely" "$G23_WF_TXT"
+  assert_contains "23ab: and the completion gate says so too" \
+    "at any severity and at any round number including round one" "$G23_CT_TXT"
+  assert_contains "23ac: a minor security finding is not optional" \
+    "except a security finding, which is never optional at any severity" "$G23_SUB_TXT"
+  # The carve-out keys on SUBJECT MATTER, not the category string: a security
+  # control failing a CODE-REVIEW.md bullet arrives as category project_check
+  # at the reviewer's default `important` severity.
+  assert_contains "23ad: the carve-out is not limited to the security category" \
+    "However it was categorized" "$G23_WF_TXT"
+  assert_contains "23ad: naming the project_check route explicitly" \
+    "wearing another category" "$G23_WF_TXT"
+  assert_contains "23ad: and the completion gate names it too" \
+    "\`project_check\` failure on a security bullet" "$G23_CT_TXT"
+
+  # --- The security rule keys on SUBJECT MATTER at every site, and its
+  #     escalate limb has a named exit (security re-check fixes) ---
+  # The canon generalized first; the two restatements enumerated `security`
+  # and `project_check` and stopped there, so security substance filed as
+  # `code_quality` or `pitfall` still fell into record-don't-fix at the
+  # submission gate — the last check before the PATCH.
+  assert_contains "23ah: the gate restatement is not a two-route enumeration" \
+    "Those two are examples, not the test" "$G23_CT_TXT"
+  assert_contains "23ah: naming the categories that carry security substance" \
+    "\`code_quality\` and \`pitfall\` carry security substance routinely" "$G23_CT_TXT"
+  assert_contains "23ah: and the subagent-workflow bullet generalizes too" \
+    "Those two are examples, not the test" "$G23_SUB_TXT"
+  # "Fixed or escalated" is only half a disposition unless escalate has a
+  # mechanism. Before this, the only named non-submit exit was bound to
+  # `critical`, leaving a non-critical security finding with no compliant path.
+  assert_contains "23ai: the escalate limb has a named exit" \
+    "the escalate limb has a named exit" "$G23_WF_TXT"
+  assert_contains "23ai: usable at any severity, not just critical" \
+    "whatever severity it carries" "$G23_WF_TXT"
+  # The one added recording instruction that invites free prose must point at
+  # the redaction rules its siblings already carry.
+  assert_contains "23aj: the non-round recording instruction is bounded" \
+    "never quote reviewer prose, drafted-check contents, or observed application output" "$G23_WF_TXT"
+
+  # --- Recording requires a real round one (round-two fix) ---
+  # The fail-closed round-two default caps further DISPATCHES; it must not also
+  # license recording findings that never had a fix-and-verify pass.
+  assert_contains "23ae: recording is what the second round buys" \
+    "Entering record-don't-fix requires that you actually saw a round-one findings list" "$G23_WF_TXT"
+  assert_contains "23ae: the fail-closed default does not unlock recording" \
+    "it does **not** license recording" "$G23_WF_TXT"
+
+  # --- Single-source: the ROUND DEFINITION, like the ceiling sentence ---
+  # 23w pins the ceiling sentence to one site. The definition needs the same
+  # pin, or it is a live drift surface of exactly the D221 kind.
+  assert_eq "23af: the round definition is stated exactly once in the port" \
+    "1" "$(g23_count "$G23_ALL_TXT" 'A round is a `task-reviewer` dispatch whose response yielded')"
+  assert_contains "23af: and the gate defers rather than restating it" \
+    "read it there rather than from this bullet, which deliberately does not restate it" "$G23_CT_TXT"
+
+  # --- The port-wide contradiction sweep ---
+  # Stated-limit 1 tells a maintainer this group checks the rule is not
+  # contradicted elsewhere. Before this sweep existed it did not, and a real
+  # contradiction (the harden step's mandatory re-review) sat in a file the
+  # group already read. Every known competing re-review phrasing must sit
+  # beside a deference to Step 5. This is a KEYWORD sweep, not a proof — a
+  # contradiction phrased in words not listed here passes it, which is why
+  # stated-limit 1 now says exactly that.
+  # Scope: IMPERATIVE mandates only — text that orders a dispatch. A gate check
+  # whose remedy happens to be "re-run the reviewer" is covered by the gate
+  # preamble's repair-dispatch rule (pinned by 23aa) and is not swept here.
+  # ASCII flow-diagram lines are skipped: they restate prose and instruct
+  # nothing independently.
+  G23_UNDEFERRED=""
+  while IFS= read -r g23line; do
+    [ -n "$g23line" ] || continue
+    case "$g23line" in
+      *"│"*) continue ;;
+      "               "*) continue ;;
+      *"ceiling"*|*"two-round"*|*"NOT rounds"*|*"not a review round"*|*"same terms as a check"*) continue ;;
+    esac
+    G23_UNDEFERRED="$G23_UNDEFERRED$g23line
+"
+  done < <(grep -hF -e 'Re-run the reviewer' -e 're-review whenever' \
+             "${G23_MD[@]}" 2>/dev/null || true)
+  assert_eq "23ag: every competing re-review mandate defers to the ceiling" \
+    "0" "$(printf '%s' "$G23_UNDEFERRED" | grep -c . || true)"
+  # ...and the sweep must actually be looking at something: a zero-hit grep
+  # would also assert 0 and pin nothing. Pin that mandates exist to sweep.
+  assert_eq "23ag: and the sweep found mandates to check" \
+    "1" "$([ "$(grep -hcF -e 'Re-run the reviewer' "${G23_MD[@]}" 2>/dev/null | grep -c '^[1-9]' || true)" -ge 1 ] && echo 1 || echo 0)"
+
+  # --- Chained-task boundaries: W2156 has landed; W2157 has not ---
+  assert_contains "23x: the cosmetic finding class has landed (W2156)" \
+    "cosmetic" "$G23_ALL_TXT"
+  assert_contains "23x: and the reviewer schema is at 1.7 (bumped by W2156)" \
+    "\"1.7\"" "$G23_RV_TXT"
+  assert_contains "23x: schema_version now reads 1.7" \
+    "Always \`\"1.7\"\` for this prompt version" "$G23_RV_TXT"
+  # W2157 has landed; this guard now asserts the opposite, flipped in place so
+  # Group 23 keeps its case count. Substantive coverage lives in Group 25.
+  assert_contains "23y: dispatch_count telemetry has landed (W2157)" \
+    "dispatch_count" "$G23_ALL_TXT"
+fi
+# ============================================================
+# Test Group 24: the cosmetic finding class (W2156)
+# ============================================================
+# Mirrored case-for-case by test-stride-hook.ps1 Test Group 21.
+#
+# WHAT THESE CASES PROVE, AND WHAT THEY DO NOT. The cosmetic class is PROSE,
+# not a pin. This port has no extraction pin and no hook that can read a
+# reviewer's block, so NOTHING here refuses a `cosmetic: true` on a critical or
+# on a security finding. These cases pin that the prohibition is STATED, stated
+# where a reader meets it, and that the port says so rather than claiming a
+# mechanism it lacks. They cannot verify that any flag is honest: `cosmetic` is
+# self-certified and no artifact in this port reaches its truth.
+#
+# NOT PORTED, recorded so the omission reads as a decision:
+#   * The reference's `cosmetic_shape_ok` jq and its Python mirror, which run on
+#     its two extraction paths. Copilot ships no executable check to extract and
+#     no extraction split to attach one to. Hand-inventing one to have an
+#     executed half would be W2127's defect in a new costume — there, 25
+#     hand-retyped assertions went green over a real defect.
+#   * No dispatch_count case belongs here. That boundary lives at 23y and stays
+#     asserting zero until W2157 lands.
+echo ""
+echo "=== Test Group 24: the cosmetic finding class (W2156) ==="
+
+G24_ROOT="$SCRIPT_DIR/.."
+G24_WF="$G24_ROOT/skills/stride-workflow/SKILL.md"
+G24_SUB="$G24_ROOT/skills/stride-subagent-workflow/SKILL.md"
+G24_CT="$G24_ROOT/skills/stride-completing-tasks/SKILL.md"
+G24_RV="$G24_ROOT/agents/task-reviewer.agent.md"
+G24_README="$G24_ROOT/README.md"
+
+if [ ! -f "$G24_WF" ] || [ ! -f "$G24_SUB" ] || [ ! -f "$G24_CT" ] || [ ! -f "$G24_RV" ] || [ ! -f "$G24_README" ]; then
+  echo "  SKIP: Test Group 24 (contract files not found relative to $SCRIPT_DIR)"
+else
+  G24_WF_TXT=$(cat "$G24_WF")
+  G24_SUB_TXT=$(cat "$G24_SUB")
+  G24_CT_TXT=$(cat "$G24_CT")
+  G24_RV_TXT=$(cat "$G24_RV")
+  G24_README_TXT=$(cat "$G24_README")
+
+  # Same find-into-an-array enumeration as Group 23, and for the same reasons:
+  # the developer grep may be ugrep (honors .gitignore, would scan nothing), and
+  # a word-split list would silently shrink the corpus — which, because the
+  # cases below are exactly-zero and exactly-one assertions, makes them PASS.
+  G24_MD=()
+  while IFS= read -r g24f; do G24_MD+=("$g24f"); done \
+    < <(find "$G24_ROOT/skills" "$G24_ROOT/agents" -name '*.md' -type f 2>/dev/null | sort)
+  G24_ALL_TXT=$(cat "${G24_MD[@]}" 2>/dev/null || true)
+
+  g24_count() {
+    { grep -oF -- "$2" <<< "$1" || true; } | grep -c . || true
+  }
+
+  # --- The schema carries the key, documented optional (AC 1) ---
+  assert_contains "24a: the issue schema carries an optional cosmetic boolean" \
+    "**\`cosmetic\`** (boolean, optional" "$G24_RV_TXT"
+  assert_contains "24a: with an explicit default" \
+    "absent means \`false\`" "$G24_RV_TXT"
+
+  # --- Canon anchor, beside the definition and nowhere else ---
+  assert_contains "24b: carries the canon back-reference anchor" \
+    "<!-- canon:cosmetic-finding-class v1 -->" "$G24_RV_TXT"
+  G24_ANCHOR_LN=$(grep -nF "<!-- canon:cosmetic-finding-class v1 -->" "$G24_RV" | head -1 | cut -d: -f1)
+  G24_DEF_LN=$(grep -nF "The \`cosmetic\` finding class — what it is." "$G24_RV" | head -1 | cut -d: -f1)
+  assert_eq "24c: the anchor sits immediately above the definition" \
+    "1" "$((G24_DEF_LN - G24_ANCHOR_LN))"
+  # The canon's check is "anchor", and it must sit beside the DEFINITION only —
+  # the SKILL.md paragraph is a mirror and must not carry a second one.
+  assert_eq "24d: the anchor appears exactly once port-wide" \
+    "1" "$(g24_count "$G24_ALL_TXT" '<!-- canon:cosmetic-finding-class v1 -->')"
+
+  # --- The two gates, and the artifact-claim gate specifically (ACs 4, 5) ---
+  assert_contains "24e: gate one — the finding's own claim is correct" \
+    "the *finding's* claim is correct" "$G24_RV_TXT"
+  assert_contains "24e: gate two — the artifact asserts nothing false" \
+    "asserts nothing that is itself false" "$G24_RV_TXT"
+  assert_contains "24f: a false statement of fact is never cosmetic" \
+    "A false statement of fact is never cosmetic" "$G24_RV_TXT"
+  # The subject list is a test, not a lookup table.
+  assert_contains "24f: the subject list illustrates gate three, it does not define it" \
+    "that list illustrates gate three, it does not define it" "$G24_RV_TXT"
+
+  # --- Location qualifier (the named pitfall) ---
+  assert_contains "24g: a re-wrap inside executable content is substantive" \
+    "inside executable content" "$G24_RV_TXT"
+
+  # --- What it does NOT do (AC 2) ---
+  assert_contains "24h: does not change severity" \
+    "It does not change \`severity\`" "$G24_RV_TXT"
+  assert_contains "24h: does not change category" \
+    "It does not change \`category\`" "$G24_RV_TXT"
+  assert_contains "24h: does not change status" \
+    "It does not change \`status\`" "$G24_RV_TXT"
+  assert_contains "24h: does not remove the finding from the record" \
+    "does not remove the finding from \`issues[]\`" "$G24_RV_TXT"
+  assert_contains "24h: disposition only" \
+    "The single thing it changes is the orchestrator's re-review disposition" "$G24_RV_TXT"
+
+  # --- Never a downgrade; orthogonal to severity (AC 4, pitfall 1) ---
+  assert_contains "24i: a cosmetic flag on a substantive finding is a reviewer defect" \
+    "is a **reviewer defect**, not a judgement call" "$G24_RV_TXT"
+  assert_contains "24i: minor and cosmetic are orthogonal, not synonyms" \
+    "orthogonal, not synonyms" "$G24_RV_TXT"
+
+  # --- The three refused conditions, and that they are prose (ACs 6, 7) ---
+  assert_contains "24j: refused when severity is not minor" \
+    "The severity is anything other than \`minor\`" "$G24_RV_TXT"
+  assert_contains "24j: covering critical and important alike" \
+    "covers **\`critical\` and \`important\` alike**" "$G24_RV_TXT"
+  assert_contains "24j: refused on the security category" \
+    "or \`category\` is \`\"security\"\`" "$G24_RV_TXT"
+  assert_contains "24j: refused when not a real boolean" \
+    "is not a real boolean" "$G24_RV_TXT"
+  assert_contains "24k: the enforcement class is stated, not implied" \
+    "This prohibition is stated, not mechanically checked." "$G24_RV_TXT"
+  assert_contains "24k: and says plainly that nothing refuses the submission" \
+    "nothing refuses the submission" "$G24_RV_TXT"
+
+  # --- The completion hard gate carries it, INSIDE the gate (ACs 6, 7) ---
+  assert_contains "24l: the self-check has a cosmetic bullet" \
+    "Cosmetic findings are correctly flagged" "$G24_CT_TXT"
+  G24_GATE_LN=$(grep -nF "MANDATORY pre-submission self-check (hard gate)" "$G24_CT" | head -1 | cut -d: -f1)
+  G24_BULLET_LN=$(grep -nF "Cosmetic findings are correctly flagged" "$G24_CT" | head -1 | cut -d: -f1)
+  G24_CLOSE_LN=$(grep -nF "This gate is **not bypassable**" "$G24_CT" | head -1 | cut -d: -f1)
+  if [ "$G24_GATE_LN" -lt "$G24_BULLET_LN" ] && [ "$G24_BULLET_LN" -lt "$G24_CLOSE_LN" ]; then
+    G24_INSIDE="inside"
+  else
+    G24_INSIDE="outside (gate=$G24_GATE_LN bullet=$G24_BULLET_LN close=$G24_CLOSE_LN)"
+  fi
+  assert_eq "24m: the bullet sits inside the hard gate, not merely in the file" \
+    "inside" "$G24_INSIDE"
+  # The W2155 interaction, stated at the last check before submission.
+  assert_contains "24m: and the flag never reaches the security rule" \
+    "the flag never reaches the security rule above" "$G24_CT_TXT"
+
+  # --- No fourth severity (pitfall 1) ---
+  assert_contains "24n: the severity enum is unchanged" \
+    "\`severity\` (enum: \`\"critical\"\` | \`\"important\"\` | \`\"minor\"\`)" "$G24_RV_TXT"
+  assert_eq "24n: cosmetic never appears as a severity value" \
+    "0" "$(g24_count "$G24_ALL_TXT" '"severity": "cosmetic"')"
+
+  # --- The disposition: stated once, in the cap section (AC 3) ---
+  assert_eq "24o: the disposition is stated exactly once port-wide" \
+    "1" "$(g24_count "$G24_ALL_TXT" 'buys no further review round')"
+  G24_DISP_LN=$(grep -nF 'buys no further review round' "$G24_WF" | head -1 | cut -d: -f1)
+  G24_CAP_LN=$(grep -nF '#### Review rounds: two is the ceiling' "$G24_WF" | head -1 | cut -d: -f1)
+  G24_NEXT_LN=$(grep -nF '#### Deep security-considerations review' "$G24_WF" | head -1 | cut -d: -f1)
+  if [ "$G24_CAP_LN" -lt "$G24_DISP_LN" ] && [ "$G24_DISP_LN" -lt "$G24_NEXT_LN" ]; then
+    G24_IN_CAP="inside"
+  else
+    G24_IN_CAP="outside (cap=$G24_CAP_LN disp=$G24_DISP_LN next=$G24_NEXT_LN)"
+  fi
+  assert_eq "24p: the disposition sits inside the cap section" \
+    "inside" "$G24_IN_CAP"
+
+  # --- The three qualifications that have been got wrong (AC 3) ---
+  assert_contains "24q: an empty issues[] is never an all-cosmetic round" \
+    "An absent or empty \`issues[]\` is never an all-cosmetic round" "$G24_WF_TXT"
+  assert_contains "24r: changes_requested overrides regardless" \
+    "honour that and re-dispatch regardless" "$G24_WF_TXT"
+  assert_contains "24s: cosmetic findings are still recorded" \
+    "Not buying a round is not being dropped" "$G24_WF_TXT"
+
+  # --- The schema bump, and the stale-mirror catcher ---
+  # This is the reference's own recorded failure on this change: its
+  # implementer bumped agents/ and skills/ and left README.md stale.
+  # 24t sweeps the corpus; 24u covers README, which is OUTSIDE that corpus and
+  # is therefore exactly the file that gets missed.
+  assert_eq "24t: no stale \"1.6\" mirror survives in the contracts" \
+    "1" "$(g24_count "$G24_ALL_TXT" '"1.6"')"
+  G24_SIXLINE=$(grep -hF '"1.6"' "${G24_MD[@]}" 2>/dev/null || true)
+  assert_contains "24t: and its one occurrence is the bump note, not a live mirror" \
+    "Bumped from" "$G24_SIXLINE"
+  assert_contains "24u: the README headline is bumped" \
+    "\`schema_version\` 1.7" "$G24_README_TXT"
+  assert_contains "24u: the new field is described there" \
+    "each \`issues[]\` entry may carry an optional \`cosmetic\` boolean" "$G24_README_TXT"
+  # An over-eager global replace is as wrong as a missed one: the historical
+  # "as of schema 1.5 / 1.6" sentences record what shipped then and must survive.
+  assert_contains "24u: and the schema-1.6 history survives unrewritten" \
+    "schema 1.6" "$G24_README_TXT"
+  assert_contains "24u: as does the schema-1.5 history" \
+    "schema 1.5" "$G24_README_TXT"
+  assert_contains "24v: the reviewer contract declares 1.7" \
+    "Always \`\"1.7\"\` for this prompt version" "$G24_RV_TXT"
+  assert_contains "24v: and its worked example matches" \
+    "\"schema_version\": \"1.7\"," "$G24_RV_TXT"
+
+  # --- The residual is stated, and stated as this port's, not the reference's ---
+  assert_contains "24w: the category-keyed residual is disclosed" \
+    "Stated residual — the category-keyed edge" "$G24_RV_TXT"
+  assert_contains "24w: keyed on subject matter here, unlike the reference" \
+    "That is a narrower residual than the reference's" "$G24_RV_TXT"
+
+  # --- Self-certification recorded among the cap's stated limits (AC 7) ---
+  assert_contains "24x: the classification is recorded as self-certified" \
+    "The \`cosmetic\` classification is self-certified" "$G24_WF_TXT"
+  assert_contains "24x: including that the Review queue cannot show it" \
+    "the flag is invisible there" "$G24_WF_TXT"
+
+  # --- Gate three and the default-deny (the porting loss, round-two fix) ---
+  # The reference states FOUR conditions: two gates, then "the subject must
+  # then be purely presentational", then "set it false on everything else".
+  # The first draft kept the two gates, demoted the third to a descriptive
+  # sentence and dropped the default entirely — leaving only necessary
+  # conditions, which an exploratory session then exploited to build a
+  # defensible argument for marking a substantive finding cosmetic.
+  assert_contains "24aa: the definition states three gates, not two" \
+    "only when **all three** gates hold" "$G24_RV_TXT"
+  assert_contains "24aa: gate three is the presentational requirement" \
+    "the subject must then be purely presentational" "$G24_RV_TXT"
+  assert_contains "24aa: stated as a requirement, not a description" \
+    "it is a requirement, not a description" "$G24_RV_TXT"
+  assert_contains "24ab: the default is deny" \
+    "Default deny: set \`cosmetic\` \`false\`, or omit it, on everything else." "$G24_RV_TXT"
+  assert_contains "24ab: apply the test, not the examples" \
+    "Apply the test, not the examples" "$G24_RV_TXT"
+  # The three gates are cumulative: clearing one and two must not imply three.
+  assert_contains "24ab: clearing the first two gates does not clear the third" \
+    "clearing gates one and two does not clear gate three" "$G24_RV_TXT"
+  # Latent defects were the majority of the real corpus and passed every
+  # present-tense formulation.
+  assert_contains "24ac: gate three is not present-tense" \
+    "Gate three is not present-tense" "$G24_RV_TXT"
+  assert_contains "24ac: naming the latent shapes explicitly" \
+    "skip-list entry that currently matches nothing" "$G24_RV_TXT"
+
+  # --- Location keyed on the property, not on two named operations ---
+  # A blank line inserted in markdown PROSE breaks case 24c's own line
+  # arithmetic, and the first draft's qualifier (re-wraps and re-orderings)
+  # did not reach it.
+  assert_contains "24ad: location is keyed on what reads the thing you changed" \
+    "whether anything reads the thing you changed" "$G24_RV_TXT"
+  assert_contains "24ad: covering a blank line, not only a re-wrap" \
+    "including inserting or removing a blank line" "$G24_RV_TXT"
+
+  # --- The mirror carries the definition's logical force (round-two fix) ---
+  # The permissive appositive sat in the file read by the party that pays for
+  # a re-review round; the strict phrasing sat with the reviewer.
+  assert_contains "24ae: the workflow mirror states all three gates" \
+    "clears **all three** gates the definition sets" "$G24_WF_TXT"
+  assert_contains "24ae: and says it is necessary, not sufficient" \
+    "That is a necessary condition, not a definition" "$G24_WF_TXT"
+  # The gate COUNT rots the way the stated-limits numeral did: restoring gate
+  # three left three pointer sentences still saying "two gates", which both
+  # reviewers caught independently. Sweep for any surviving count claim that
+  # is not the deliberate "the first two gates" (meaning gates one and two).
+  # Scoped to lines that are about THIS definition: an unrelated gate elsewhere
+  # in the port legitimately speaks of two conditions.
+  G24_GATECOUNT=$(grep -hF 'two gates' "${G24_MD[@]}" 2>/dev/null \
+    | grep -vF 'first two gates' | grep -F 'cosmetic' || true)
+  assert_eq "24ah: no pointer sentence still calls it a two-gate definition" \
+    "0" "$(printf '%s' "$G24_GATECOUNT" | grep -c . || true)"
+
+  # --- The licence defers to the three non-round dispatches (round-two fix) ---
+  # W2155 fixed this defect class across nine sites; this paragraph
+  # reintroduced it, and the 23ag sweep structurally cannot see it because the
+  # paragraph contains neither of that sweep's needles.
+  assert_contains "24af: the all-cosmetic licence excepts the non-round dispatches" \
+    "except for the dispatches that are not rounds" "$G24_WF_TXT"
+
+  # --- The gate's closing claim does not generalize over its self-reports ---
+  assert_contains "24ag: the gate scopes its enforcement claim" \
+    "That does not generalize to every bullet in this gate" "$G24_CT_TXT"
+
+  # --- The stated-limits numeral matches the list it heads ---
+  # W2156 appended a fourth limit and left the heading reading "Three limits",
+  # which is verbatim the shape agents/task-reviewer.agent.md ships as its own
+  # example of a substantive, never-cosmetic finding ("a heading reading 'Two
+  # limits' above three"). Pin the numeral against the actual list length so
+  # the next limit added cannot re-introduce it.
+  G24_LIMITS_LN=$(grep -nF 'limits, written down so nobody reads a pin where there is prose' "$G24_WF" | head -1 | cut -d: -f1)
+  G24_LIMIT_ITEMS=0
+  if [ -n "$G24_LIMITS_LN" ]; then
+    G24_LIMIT_ITEMS=$(awk -v s="$G24_LIMITS_LN" 'NR>s {
+        if ($0 ~ /^[0-9]+\. /) { n++; next }
+        if ($0 ~ /^$/) next
+        if (n > 0) exit
+      } END { print n+0 }' "$G24_WF")
+  fi
+  G24_LIMIT_WORD=$(sed -n "${G24_LIMITS_LN}p" "$G24_WF" | grep -oE '(One|Two|Three|Four|Five|Six) limits' | head -1 | cut -d' ' -f1)
+  case "$G24_LIMIT_ITEMS" in
+    ( 1 ) G24_EXPECT_WORD="One" ;; ( 2 ) G24_EXPECT_WORD="Two" ;;
+    ( 3 ) G24_EXPECT_WORD="Three" ;; ( 4 ) G24_EXPECT_WORD="Four" ;;
+    ( 5 ) G24_EXPECT_WORD="Five" ;; ( 6 ) G24_EXPECT_WORD="Six" ;;
+    ( * ) G24_EXPECT_WORD="UNCOUNTED($G24_LIMIT_ITEMS)" ;;
+  esac
+  assert_eq "24z: the stated-limits numeral matches the list it heads" \
+    "$G24_EXPECT_WORD" "$G24_LIMIT_WORD"
+
+  # --- Single-source discipline: the subagent half defers, never restates ---
+  assert_contains "24y: the subagent-workflow bullet defers rather than restating" \
+    "deliberately not restated here" "$G24_SUB_TXT"
+fi
+# ============================================================
+# Test Group 25: dispatch_count review-cost telemetry (W2157)
+# ============================================================
+# Mirrored case-for-case by test-stride-hook.ps1 Test Group 22.
+#
+# WHAT THESE CASES PROVE, AND WHAT THEY DO NOT. `dispatch_count` is
+# SELF-REPORTED: no hook in this port observes a subagent dispatch (hooks.json
+# wires Bash tool events and the stop gate only), and the Stride server's
+# workflow_steps validator does not check the key at all. So nothing here — and
+# nothing anywhere in this port — can verify that a recorded count is honest,
+# or even that it is an integer. These cases pin that the key is DOCUMENTED as
+# optional, that it counts dispatches rather than rounds, that no seventh step
+# name was added, and above all that the six limits ship WITH it. They cannot
+# check a single recorded value.
+#
+# NOT PORTED, recorded so the omission reads as a decision:
+#   * The reference keeps these limits in a sibling file,
+#     skills/stride-workflow/telemetry-cost.md. This port has no sibling files
+#     at all — every skill is a single SKILL.md — so the limits are an inline
+#     section following the `reason_code` model (table row, canon anchor,
+#     elaboration immediately below). Same substance, this port's shape.
+#   * No assertion on a recorded count's correctness. There is no artifact to
+#     check it against; saying so is the honest coverage statement.
+echo ""
+echo "=== Test Group 25: dispatch_count review-cost telemetry (W2157) ==="
+
+G25_ROOT="$SCRIPT_DIR/.."
+G25_WF="$G25_ROOT/skills/stride-workflow/SKILL.md"
+G25_CT="$G25_ROOT/skills/stride-completing-tasks/SKILL.md"
+
+if [ ! -f "$G25_WF" ] || [ ! -f "$G25_CT" ]; then
+  echo "  SKIP: Test Group 25 (contract files not found relative to $SCRIPT_DIR)"
+else
+  G25_WF_TXT=$(cat "$G25_WF")
+  G25_CT_TXT=$(cat "$G25_CT")
+
+  G25_MD=()
+  while IFS= read -r g25f; do G25_MD+=("$g25f"); done \
+    < <(find "$G25_ROOT/skills" "$G25_ROOT/agents" -name '*.md' -type f 2>/dev/null | sort)
+  G25_ALL_TXT=$(cat "${G25_MD[@]}" 2>/dev/null || true)
+
+  g25_count() {
+    { grep -oF -- "$2" <<< "$1" || true; } | grep -c . || true
+  }
+
+  # --- The key exists, and is optional (AC 1, AC 3) ---
+  assert_contains "25a: the schema table carries a dispatch_count row" \
+    "| \`dispatch_count\` | integer | Optional" "$G25_WF_TXT"
+  assert_contains "25a: meaningful only on a dispatched step" \
+    "meaningful only where \`dispatched\` is \`true\`" "$G25_WF_TXT"
+  assert_contains "25b: omitting it stays valid" \
+    "Omitting it is always valid" "$G25_WF_TXT"
+
+  # --- It counts DISPATCHES, not ROUNDS (AC 2) ---
+  # The reference spent paragraphs separating these two quantities; this port
+  # has even more reason to, since its round count lives in no artifact.
+  assert_contains "25c: it counts dispatches, not rounds" \
+    "It counts **dispatches, not rounds**" "$G25_WF_TXT"
+  assert_contains "25c: a crashed dispatch still counts, because it spent its tokens" \
+    "a crashed dispatch still spent its tokens" "$G25_WF_TXT"
+  assert_contains "25c: and never filled from a round count" \
+    "never fill it from a round count" "$G25_WF_TXT"
+
+  # --- No seventh step name (AC 4) ---
+  assert_contains "25d: a new key is not a new step name" \
+    "A new key is not a new step name" "$G25_WF_TXT"
+  # The six-name vocabulary must be untouched, and the fold-in rule with it.
+  assert_contains "25d: the six-name vocabulary is unchanged" \
+    "Always include **all six** step names" "$G25_WF_TXT"
+  assert_eq "25d: no seventh name was coined alongside the key" \
+    "0" "$(g25_count "$G25_ALL_TXT" '"name": "dispatch_count"')"
+
+  # --- The six limits ship WITH the key (AC 5) — the more important half ---
+  assert_contains "25e: the limits are anchored to the canon" \
+    "<!-- canon:dispatch-count-telemetry v1 -->" "$G25_WF_TXT"
+  assert_eq "25e: and that anchor appears exactly once port-wide" \
+    "1" "$(g25_count "$G25_ALL_TXT" '<!-- canon:dispatch-count-telemetry v1 -->')"
+  assert_contains "25e: stated with the key rather than after it" \
+    "These six limits ship *with* the key rather than after it" "$G25_WF_TXT"
+  # Limit 1 — wall-clock is not token cost, with the figures that show it.
+  assert_contains "25f: wall-clock is not token cost" \
+    "Wall-clock is not token cost" "$G25_WF_TXT"
+  assert_contains "25f: carrying the measured variation" \
+    "2.1×" "$G25_WF_TXT"
+  assert_contains "25f: and the inversion that proves the point" \
+    "20.3% more expensive when its token cost was in fact 1.4% cheaper" "$G25_WF_TXT"
+  assert_contains "25f: with the rule that follows from it" \
+    "never to conclude it was the more expensive of two" "$G25_WF_TXT"
+  # Limit 2 — different populations, so the division is meaningless.
+  assert_contains "25g: the two keys measure different populations" \
+    "measure different populations, so do not divide one by the other" "$G25_WF_TXT"
+  assert_contains "25g: naming the measured overstatement" \
+    "overstated the mean reviewer round by **40% and 52%**" "$G25_WF_TXT"
+  assert_contains "25g: there is no per-round figure to compute" \
+    "There is no per-round figure in this record. Do not compute one." "$G25_WF_TXT"
+  # Limit 3 — a skipped review is not a costless review.
+  assert_contains "25h: absence of a cost figure is not absence of cost" \
+    "Absence of a cost figure is not evidence of absent cost" "$G25_WF_TXT"
+  # Limit 4 — an omitted count is ambiguous.
+  assert_contains "25i: an omitted count must not be imputed" \
+    "readers must not impute" "$G25_WF_TXT"
+  assert_contains "25i: report the covered subset instead" \
+    "report the covered subset and its size" "$G25_WF_TXT"
+  # Limit 5 — and the port-specific divergence that makes it sharper here.
+  assert_contains "25j: a crash and an extra round are indistinguishable" \
+    "cannot separate a crashed re-dispatch from a genuine extra round" "$G25_WF_TXT"
+  assert_contains "25j: a compliant 3 is not a cap breach" \
+    "never read a cap breach out of \`dispatch_count\` alone" "$G25_WF_TXT"
+  # This is where the port MUST diverge from the reference: it has neither of
+  # the artifacts the reference reconciles the distinction from.
+  assert_contains "25k: and this port carries neither reconciling artifact" \
+    "This port carries neither" "$G25_WF_TXT"
+  # Limit 6 — nothing validates it, so the first consumer must guard it.
+  assert_contains "25l: nothing validates the value on the way in" \
+    "Nothing validates the value on the way in, so a consumer must guard it" "$G25_WF_TXT"
+  assert_contains "25l: the guard obligation is assigned to the first consumer" \
+    "The first consumer to read it" "$G25_WF_TXT"
+  assert_contains "25l: and the alternative is named" \
+    "the same optional-but-validated shape \`reason_code\` already has" "$G25_WF_TXT"
+
+  # --- No invented token count (pitfall) ---
+  assert_contains "25m: a token count is deliberately not invented" \
+    "record what is actually measurable rather than inventing a number" "$G25_WF_TXT"
+  assert_contains "25m: for the right reason — portability, not measurability" \
+    "The open question is **portability**" "$G25_WF_TXT"
+
+  # --- The honesty clause: this port cannot measure it ---
+  # The task's own manual test asks whether the field is fillable here or only
+  # aspirational. The answer is in the contract rather than left implied.
+  assert_contains "25n: the count is self-reported, not measured" \
+    "self-reported by the orchestrator from its own context" "$G25_WF_TXT"
+  assert_contains "25n: because no hook observes a dispatch" \
+    "No hook in this port observes a subagent dispatch" "$G25_WF_TXT"
+
+  # --- The writing rule (AC 2, AC 3) ---
+  assert_contains "25o: state a 1 you know" \
+    "state a \`1\` you know" "$G25_WF_TXT"
+  assert_contains "25o: because an omission is indistinguishable from an inability" \
+    "looks exactly like one a version could not avoid" "$G25_WF_TXT"
+
+  # --- The canonical example carries it, exactly once ---
+  assert_contains "25p: the full-dispatch example records a count" \
+    "\"dispatch_count\": 2" "$G25_WF_TXT"
+  # Every full-dispatch reviewer example must carry one, not just the canonical
+  # one: the same illustrative record appears four times across two skills, and
+  # updating one copy leaves the other three modelling the chosen omission the
+  # writing rule above forbids — and manufacturing exactly the ambiguity limit 4
+  # warns readers about. Count the examples and require the counts to match.
+  G25_REVEX=$(grep -hF '"name": "reviewer",       "dispatched": true' \
+    "$G25_WF" "$G25_CT" 2>/dev/null || true)
+  G25_REVEX_N=$(printf '%s' "$G25_REVEX" | grep -c . || true)
+  assert_eq "25s: every full-dispatch reviewer example carries a count" \
+    "$G25_REVEX_N" "$(printf '%s' "$G25_REVEX" | grep -cF 'dispatch_count' || true)"
+  # ...and the sweep must actually have found examples, or it asserts 0 == 0.
+  assert_eq "25s: and there were examples to check" \
+    "1" "$([ "${G25_REVEX_N:-0}" -ge 3 ] && echo 1 || echo 0)"
+
+  # The skip-form example must NOT gain one: a skipped step has no dispatches.
+  G25_SKIPLINE=$(grep -hF '"name": "reviewer",       "dispatched": false' "$G25_WF" 2>/dev/null || true)
+  assert_eq "25p: the skip-form example carries no count" \
+    "0" "$(g25_count "$G25_SKIPLINE" 'dispatch_count')"
+
+  # --- The completing-tasks side defers rather than restating ---
+  # Single-source discipline: the schema is owned by stride-workflow.
+  assert_eq "25q: the limits are stated exactly once port-wide" \
+    "1" "$(g25_count "$G25_ALL_TXT" 'These six limits ship *with* the key rather than after it')"
+  # ...and the completing-tasks side is where a restatement would most likely
+  # land, since it owns the completion payload. Check that file directly rather
+  # than inferring it from the port-wide count.
+  assert_eq "25q: and the completing-tasks side restates none of them" \
+    "0" "$(g25_count "$G25_CT_TXT" 'These six limits ship *with* the key rather than after it')"
+  assert_eq "25q: nor redefines the key there" \
+    "0" "$(g25_count "$G25_CT_TXT" 'It counts **dispatches, not rounds**')"
+
+  # --- The record-a-reconciliation clause is bounded (security fix) ---
+  # Every sibling completion_notes instruction in this file carries a redaction
+  # pointer; a new free-prose one without it re-opens a persisted, rendered sink.
+  assert_contains "25r: the reconciliation clause is bookkeeping, not review substance" \
+    "as dispatch bookkeeping only" "$G25_WF_TXT"
+  assert_contains "25r: and carries the redaction pointer its siblings carry" \
+    "never quote reviewer prose, a finding's description, or observed crash output" "$G25_WF_TXT"
+fi
 # ============================================================
 # Summary
 # ============================================================

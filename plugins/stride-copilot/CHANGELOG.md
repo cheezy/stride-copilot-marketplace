@@ -2,6 +2,648 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.39.0] - 2026-09-04
+
+### Added — `dispatch_count` review-cost telemetry (W2157)
+
+The `reviewer` entry of `workflow_steps` may now carry an optional
+`dispatch_count`: how many times the reviewer subagent was **dispatched**,
+counting a re-dispatch after a crash, because a crashed dispatch really did
+spend its tokens. A cost nobody can see is a cost nobody manages — the review
+phase is the most expensive part of a task and nothing in a completion record
+showed it.
+
+**It counts dispatches, not rounds**, and those are deliberately different
+quantities. Omitting it stays valid, so a version of this port predating the key
+completes exactly as before. **No seventh step name was added** — the six-name
+vocabulary is untouched, and the optional sub-step dispatches (deep security
+review, Step 5.5, Step 5.6) still fold their wall-clock into this entry's
+`duration_ms` rather than earning names of their own. A new key is not a new
+name. It follows the `reason_code` precedent exactly: a table row marked
+optional, a canon anchor, and the elaboration immediately below it.
+
+**The six limits are the more important half, and they ship with the key.** The
+task's own instruction was "port the limits with the key, or do not port the
+key", and it is right: a figure trusted past its accuracy is worse than no
+figure. Wall-clock is not token cost — tokens per second varied about **2.1×**
+by dispatch kind, and on real records the pair ranked one task **20.3% more
+expensive when its token cost was 1.4% cheaper**, inverting the order. The two
+keys measure **different populations**, so `duration_ms / dispatch_count` is not
+a per-round figure; it overstated the mean reviewer round by 40% and 52% on the
+records available. A review-skipped task can have real review-phase cost and
+record none of it, so **absence of a figure is not evidence of absent cost**. An
+omitted count is ambiguous and must not be imputed. And nothing validates the
+value on the way in.
+
+**Judgement call 1 — the limits are an inline section, not a sibling file.** The
+reference keeps them in `skills/stride-workflow/telemetry-cost.md`. This port
+has **no sibling files at all** — every skill is a single `SKILL.md` — so
+importing that shape would have introduced a file convention the port does not
+use, the same mistake as importing a `$MERGED` it does not have. Same substance,
+this port's shape, following the `reason_code` model that already lives eight
+lines away.
+
+**Judgement call 2 — limit 5 says something stronger here than in the
+reference.** A `2` may be one round plus one crash or two rounds, so a fully
+compliant `3` reads like a breach of the two-round cap to anyone who knows that
+cap. **It is not one.** The reference can reconcile the distinction while a task
+is in flight, from its round-counter and merged-result files. **This port
+carries neither** — W2155 said so explicitly and deliberately — so the round
+count lives only in the orchestrator's context and is recoverable from no
+artifact at all, in flight or afterwards. That makes it *more* important here to
+say in `completion_notes` what a count above two meant — **as dispatch
+bookkeeping only**, on the bounded terms the contract sentence carries.
+
+**Judgement call 3 — say plainly that this port cannot measure it.** The task's
+manual test asked whether the field is fillable here or merely aspirational.
+Verified: `hooks.json` wires only Bash tool events and the stop gate, so nothing
+observes a subagent dispatch. `dispatch_count` is **self-reported by the
+orchestrator from its own context**, exactly as the review-round count is — a
+record of what the orchestrator says it did, not a measurement. The contract
+says so rather than leaving a reader to assume a mechanism.
+
+**The guard obligation is assigned, not left implicit.** Verified directly
+against this Stride server: the `workflow_steps` validator checks `name`,
+`dispatched`, `duration_ms` and `reason`, and separately gates the `reason_code`
+enum — but **not** `dispatch_count`. Unlike `reason_code`, which is refused when
+unrecognised, this key is accepted whatever its type, persisted, and returned
+verbatim. Nothing reads it today, so the present cost is a corrupt record rather
+than anything worse — and the first consumer to read it must guard for a
+non-integer itself, or the validator should gain `reason_code`'s
+optional-but-validated shape. **Recorded, not fixed:** the task page renders
+name, duration and `reason_code` only, so a recorded count is invisible there.
+That is in the outer Phoenix app, outside this task's scope, and matches the
+reference's own disclosure.
+
+**No token count was invented** — but be precise about why, because the usual
+justification is wrong. Some runtimes *do* measure a per-dispatch token cost, so
+recording one would not be inventing it; the open question is **portability**,
+and it is unsettled.
+
+### Fixed in the same task — the sink that keeps re-opening (W2157)
+
+The specialist security review returned `partial` on the counts-and-durations
+consideration, and the cause is a pattern this goal has now hit **three times in
+three tasks**: limit 5 ended with "say in `completion_notes` what a count above
+two meant" — a free-prose write into a persisted, Review-queue-rendered field,
+with no redaction pointer. Every sibling instruction writing to that field in
+the same file carries one, and there is no unconditional blanket rule to
+inherit: the completing-tasks security rule is scoped to material *captured
+during exploration*, and the schema row attaches nothing. Explaining what a
+count meant naturally invites the reviewer prose or finding description the
+consideration bars.
+
+The clause is now bounded to **dispatch bookkeeping only** — "3 = two rounds
+plus one crashed dispatch" — in the agent's own words, paths repository-relative,
+redacted on the terms already governing that field, and never quoting reviewer
+prose, a finding's description, or observed crash output. Case `25r` pins both
+halves of that.
+
+An exploratory session chartered on the measurability question found the other
+half. The same illustrative `workflow_steps` record appears **four times** across
+two skills with byte-identical figures, and only the canonical copy gained the
+key — so three examples, one of them in the schema-owning file itself, modelled
+exactly the chosen omission the writing rule added in this same change forbids
+("state a `1` you know: an omission you chose looks exactly like one a version
+could not avoid"), and manufactured the ambiguity limit 4 warns readers about.
+Worse, `stride-completing-tasks` — the skill an agent actually reads while
+building a completion payload — mentioned `dispatch_count` **zero times** while
+carrying two full payload examples without it. All four now carry the count, and
+case `25s` counts the full-dispatch examples and requires the counts to match,
+with a non-vacuity guard so it cannot pass on an empty sweep. Proven to bite by
+reverting one copy.
+
+That session is also worth recording for what it did *not* find. It verified
+every checkable self-claim in this change: the hooks wiring description exactly,
+"no hook observes a subagent dispatch" exactly, "this port carries neither"
+round-count artifact (independently corroborated by text predating the change),
+"no sibling files at all", limit 3's no-reviewer-precondition gates, and **all
+twelve numeric figures against the reference, with no drift in magnitude or
+direction.**
+
+The code review's one finding was the mirror image: Group 25 read the
+completing-tasks contract into a variable and never used it, while its comment
+claimed that side "defers rather than restating" — a claim the group proved only
+via a port-wide count. Both reads are now live assertions against that file
+directly, so the comment is backed by a check rather than by inference.
+
+### Added — hook suite coverage
+
+**Test Group 25** (bash) and **Test Group 22** (PowerShell), 43 cases each,
+mirrored case-for-case and verified label-for-label. They pin the optional row,
+the dispatches-not-rounds rule, the absence of a seventh name, every one of the
+six limits including its figures, the self-reported honesty clause, and that the
+canonical full-dispatch example carries a count while the **skip-form example
+does not** — a skipped step has no dispatches to count.
+
+Group 23's `23y` guard, left by W2155 asserting `dispatch_count` was absent, is
+**flipped in place** so Group 23 keeps its 65 cases. That is the third and last
+of the boundary guards this goal's chained tasks left for each other, and all
+three have now been flipped by the task that earned it.
+
+## [2.38.0] - 2026-09-04
+
+### Added — the cosmetic finding class (W2156)
+
+`issues[]` entries may now carry an optional `cosmetic` boolean. A cosmetic
+finding is presentational only — wrapping, column width, word and line counts,
+phrasing preference, the ordering of equivalent prose — and it is still emitted
+with its honest severity and category, still reported, and still recorded in
+`completion_notes`. **The single thing it changes is the re-review
+disposition:** a round whose findings are *all* cosmetic buys no further round.
+It is not a carve-out, an exclusion, or a suppression, so it amends none of the
+exhaustive-carve-out wording this port carries.
+
+**The gate reads on the artifact's claim, not only the finding's** — and this is
+the half that is easy to get wrong, because it was the reference's own defect.
+Your finding can be perfectly correct while the thing it points at states
+something false: a doc saying "prints six values" where seven print, a comment
+placing an assert below a write that sits above it, a heading reading "Two
+limits" above three. Each of those is substantive. **A false statement of fact
+is never cosmetic, however small.** The subject list is examples of a test,
+never a list to match against — and it is qualified by **location**: re-wrapping
+a paragraph is cosmetic, but a re-wrap inside executable content (a jq
+expression, a heredoc, a fence something greps) changes what runs.
+
+**Cosmetic is orthogonal to severity, not a fourth level of it.** It only ever
+sits on a `minor`, and a `minor` can be substantive and still buy a round.
+`cosmetic: true` on a substantive finding is a **reviewer defect**, not a
+judgement call.
+
+**Judgement call 1 — prose, not a pin, and the shipped text says so.** The
+reference refuses three conditions (severity ≠ `minor`, `category ==
+"security"`, non-boolean) with a `cosmetic_shape_ok` pin on its two extraction
+paths. This port has no extraction split, no `review-block-extraction.md`, and
+no hook that can observe a reviewer's block, so there is nothing to attach a pin
+to. The refusal became a stated prohibition in the reviewer contract plus a
+self-check bullet in the completion hard gate, and **both say in shipped text
+that nothing refuses the submission.** Inventing a pin to have one would be
+W2127's defect in a new costume. The reference's own recorded slip here is
+avoided too: its prohibition paragraph said "two categories" while naming one
+category and one *severity*, omitting `important` — all three are named
+explicitly.
+
+**Judgement call 2 — the Source A/B/C scoping was re-anchored, not dropped.**
+The reference scopes its all-cosmetic rule to its structured-extraction paths,
+because on its prose fallback `issues[]` is absent by construction and "every
+entry is cosmetic" would be vacuously true. Copilot has no such split, so
+importing that vocabulary would name machinery this port does not have — the
+failure case `23e` already guards for `$MERGED`. The caveat re-anchored on the
+artifact this port *does* have: the parsable fenced json block, the same
+threshold W2155's round definition already uses.
+
+**Judgement call 3 — `schema_version` bumped to `"1.7"`.** The port genuinely
+gains a field, which is the rule the reference applied. **Ten sites moved**,
+including the two `stride-subagent-workflow` worked examples and the `README.md`
+headline — and the README is precisely the file the reference's own implementer
+left stale on this same change. Cases `24t` and `24u` exist to catch that
+recurrence: `24t` sweeps the `find`-enumerated contract corpus for a surviving
+`"1.6"` and requires its single remaining occurrence to be the bump note rather
+than a live mirror; `24u` reads `README.md`, which sits *outside* that corpus
+and is therefore exactly the file a corpus sweep misses. `24u` also asserts the
+historical "as of schema 1.5 / 1.6" sentences **survive**, so an over-eager
+global replace fails just as a missed one does.
+
+**The residual, stated stronger than the reference's.** The refusal keys on the
+literal `category: "security"` string, so a security-relevant finding filed at
+`minor` under `code_quality` or `pitfall` can still carry the flag. The
+reference records that edge as accepted, because *its* round cap relies on the
+same category-keyed boundary. **This port's does not:** W2155 made the security
+rule key on the finding's **subject matter however it was categorized**, and the
+completion hard gate re-applies that test to every finding before submission,
+independent of any `cosmetic` flag. A mis-filed security finding marked cosmetic
+still cannot be recorded and shipped — it is fixed or escalated at the gate.
+What the flag can still spare is the re-review dispatch that might have surfaced
+it a second time. That is a narrower residual, and it is stated rather than left
+to inference — which is what this task's `security_considerations` asked for.
+
+**Recorded, not fixed:** the Review queue groups issues by severity alone, so
+the flag is invisible there. Pre-existing, in the outer Phoenix app, out of
+scope here — and now written down as the fourth stated limit beside the cap,
+alongside the disclosure that the classification is **self-certified**: nothing
+in this port reads a finding and judges whether it is truly presentational, so
+the cheapest abuse is relabelling an ordinary substantive `minor`, which no
+artifact here can see.
+
+### Fixed — the porting loss an exploratory session found (W2156)
+
+A session chartered against the definition's own weak point — judgement drift —
+classified five **real** findings from this port's recent tasks against the
+shipped text and found the definition could not decide three of them. Tracing
+the rule back to the reference explained why: **the reference states four
+conditions and the first draft shipped two.**
+
+The reference gates are (1) the finding's claim is correct, (2) the artifact it
+points at asserts nothing false, (3) *"with both gates satisfied, the subject
+must then be purely presentational"*, and then a default: *"Apply the test, not
+the examples. Set it `false` (or omit it) on everything else."* The draft kept
+gates one and two verbatim, demoted **gate three to a descriptive sentence**,
+and dropped the default entirely — then added "read that list as examples of a
+test, never as a list to match against", which in the reference disclaims the
+exhaustiveness of a *required* gate but here disclaimed the only remaining
+sentence naming a subject test. What shipped was a definition of **necessary
+conditions with no sufficient condition and no default.**
+
+That is not theoretical. Three of the five real findings — a skip-list entry
+matching nothing yet, a trigger stated more broadly than its example, two suite
+halves counting with different primitives — clear gate one, clear gate two (a
+skip-list and a counting function state no proposition for it to bite on), and
+are plainly substantive. Nothing in the draft refused them. The session then
+built the adversarial argument end to end, every sentence of it supported by
+shipped text. **Gate three and the default-deny are restored**, gate three is
+marked a requirement rather than a description, and it is explicitly **not
+present-tense** — "nothing behaves differently today" does not satisfy it —
+because latent defects were the majority of the real corpus and passed every
+present-tense formulation.
+
+**The location qualifier named operations instead of the property.** It reached
+re-wraps and re-orderings, so inserting a blank line in markdown *prose* read as
+cosmetic. The session demonstrated otherwise against this port's own suite:
+case `24c` does line arithmetic over that prose, and one inserted blank line
+turns it red. The qualifier now keys on the property — **whether anything reads
+the thing you changed** — and names blank lines, heading levels and moved lines
+alongside re-wraps.
+
+**The mirror was weaker than the definition, in the file with the incentive.**
+The reviewer contract said "only when both gates hold" (necessary); the
+workflow mirror used an appositive that reads as a definition (sufficient) — and
+the workflow file is the one read by the orchestrator, the party that pays for a
+re-review round. The mirror now states all three gates and says in terms that
+this is a necessary condition, not a definition.
+
+**The all-cosmetic licence reintroduced W2155's own defect class.** "Proceed to
+completion without re-dispatching" carried no deference to the three dispatches
+that are not rounds — so an all-cosmetic round followed by a hardened check
+entering the test tree pitted this paragraph against the Step 5.6 mandate, which
+is exactly the contradiction the previous release fixed across nine sites. Worse,
+the `23ag` sweep structurally could not see it: the paragraph contains neither of
+that sweep's needles. The licence now excepts the non-round dispatches
+explicitly.
+
+**And the hard gate overclaimed its own enforcement.** Its closing sentence said
+a failing self-check is a failing completion, generalizing over two bullets that
+state in their own words that nothing checks them. The claim is now scoped to
+the count, key and status-enum checks the server actually rejects, and says
+plainly that the two self-reports bind because you run them. This tension
+predates W2156 — W2155 added the first such bullet — so it is recorded as
+pre-existing and widened, not newly introduced.
+
+Cases `24aa`–`24ag` pin all five.
+
+### Fixed in the same task — what the review round found (W2156)
+
+**The best of them is the one this change is about.** The diff appended a
+fourth stated limit beside the cap and left the heading reading *"Three limits,
+written down so nobody reads a pin where there is prose"* above a four-item
+list. That is, verbatim, the shape the new definition ships as its own worked
+example of a **substantive, never-cosmetic** finding — "a heading reading 'Two
+limits' above three". A change introducing the rule that a false statement of
+fact is never cosmetic introduced one, in normative contract text, four
+paragraphs away. One word fixed it; **case `24z` now pins the numeral against
+the actual list length**, counting the items rather than trusting the word, so
+the next limit added cannot re-introduce it. Proven to bite by reverting the
+word and watching it go red.
+
+**A false attribution, caught by the specialist security reviewer.** The
+residual paragraph claimed the reference "records the same edge as accepted".
+It does not. What the reference discloses is that its `cosmetic_shape_ok` pin
+reaches a flag's type and co-ordinates but never a finding's subject matter,
+and the cheapest abuse it names is relabelling an ordinary substantive `minor`
+— a *different* edge. The paragraph borrowed authority the source does not
+give, in a document that had just finished saying a false statement of fact is
+never cosmetic. It now states only what is verifiable: the reference's
+recording prohibition keys on the literal `category: "security"` string, and
+this port's keys on subject matter. The comparison survives; the attribution
+does not.
+
+**And an absolute that overstated its own gate.** "A mis-filed security finding
+marked cosmetic therefore still cannot be recorded and shipped" reads as a
+mechanism, twelve words before the same file admits the gate is a self-report.
+It now says the finding is *caught before submission* "on the same
+prose-and-self-report terms as every other bullet there, since nothing in this
+port refuses a payload". Claiming enforcement this port does not have is the
+precise failure both this task and the last one exist to avoid.
+
+**The all-cosmetic licence now carries the qualifier its sibling had.** The
+disposition granted "fix them or not as you choose" with its only security
+qualification keyed on the literal category string, while the record-don't-fix
+paragraph eleven lines below was explicitly written as "subject to the security
+rule below, which is not conditioned on the round number". A security-substance
+finding filed under `code_quality` at `minor` with the flag set was, reading
+Step 5 alone, both exempted from re-review and permitted to go unfixed — the
+completion gate still caught it, so this weakened a defence-in-depth layer
+rather than opening a suppression channel, but the asymmetry was real. Both
+paragraphs now carry the pointer, and the qualification names subject matter
+rather than three category strings.
+
+**A guard that did not cover what its group reads.** Group 24's SKIP guard
+omitted the one contract file case `24y` actually opens, so an absent file
+would have produced a spurious failure instead of the intended skip. Group 23
+guards its equivalent; both halves now match it.
+
+### Fixed after round two — a count that rotted, under the security exemption
+
+Round two and a specialist security re-check independently found the same
+defect, and it is the same shape as the "Three limits" one: restoring gate
+three left **three pointer sentences still calling it a two-gate definition** —
+in `stride-subagent-workflow`, in `stride-workflow` seven lines below the
+paragraph that correctly says "all three", and in this changelog. A reader
+acting on the numeral rather than opening the definition reconstructs exactly
+the necessary-conditions-only rule the exploratory session showed admits
+substantive findings. Fixed at all three, and **case `24ah` now sweeps the
+corpus** for any surviving two-gate claim that is not the deliberate "the first
+two gates", so the count cannot rot a third time. That sweep needed one correction of its own before it was honest: first written, it swept every `two gates` line in the corpus and tripped on an unrelated gate elsewhere in the port that legitimately describes two conditions. It is now scoped to lines about this definition, and was proven to bite by re-introducing the defect and watching it go red.
+
+Two more from the same pass. The residual's replacement clause — "on the same
+prose-and-self-report terms as **every other bullet there**" — was itself false:
+verified against the server's own completion validator, most bullets in that
+gate *do* have server backing, and the same diff had just added the correct
+scoping to the gate itself. It understated this port's enforcement rather than
+granting a licence, but it re-committed in one file the generalization that had
+just been removed from the other; it is now scoped to the two self-report
+bullets. And the non-round exception introduced "the three dispatches" above a
+two-item gloss closed by "both" — verbatim the shape `24z` exists to police —
+so the numeral is dropped.
+
+**These were fixed rather than recorded, and the reason is the rule this
+release ships.** Round two is the ceiling, and remaining `important` and `minor`
+findings after it are recorded — **except a security finding, at any severity**.
+The specialist filed all three under `category: security`, which exempts them.
+No third review round was dispatched: the fixes are verified by the full suites
+and by three new assertions, and the exemption is recorded here rather than
+being used to buy another round.
+
+### Added — hook suite coverage
+
+**Test Group 24** (bash) and **Test Group 21** (PowerShell), 62 cases each (Group 23 unchanged at 65),
+mirrored case-for-case and verified label-for-label. They pin the three gates, the
+false-statement rule, the location qualifier, the four things the flag does not
+change, all three refused conditions, the prose-not-pin disclosure, the
+hard-gate bullet's presence *inside* the gate (line arithmetic, not mere
+presence), the canon anchor sitting immediately above the definition and
+appearing exactly once port-wide, the disposition being stated exactly once and
+inside the cap section, and the stale-mirror catchers above.
+
+`24o` earned its keep immediately: the first draft of the deference line in
+`stride-subagent-workflow` repeated the disposition sentence verbatim, and the
+exactly-once assertion caught the single-source violation before it shipped.
+
+The three `23x` boundary guards W2155 left asserting `cosmetic` and `"1.7"` were
+absent are **flipped in place** rather than added to, so Group 23 stays at 65
+cases. `23y` (`dispatch_count`) is deliberately left asserting zero — that
+boundary belongs to W2157 and is not pre-empted here.
+
+## [2.37.0] - 2026-09-04
+
+### Added — the two-round review cap (W2155)
+
+A reviewer asked to review always finds something, so an uncapped review loop
+does not converge. The reference measured every task taking two rounds and one
+taking a third fix cycle, at over a hundred thousand subagent tokens a round.
+Copilot inherits that cost until it inherits the cap, so here it is: **two
+review rounds is the ceiling, and the second verifies rather than
+re-reviews.**
+
+Round two's mission is scoped to verifying round one's fixes; its **evidence is
+not** — it still receives the full diff and every field the first dispatch
+received, and it still emits every section verdict, the full 1:1
+`acceptance_criteria` array, and the complete `project_checks`. Scoping changes
+what you look for, never what you emit. A dispatch handed only the fix delta
+would make the 1:1 array dishonest, and a round two that re-enumerates
+everything from scratch buys nothing.
+
+After round two, remaining `important` and `minor` findings are **recorded**,
+by severity, category and `file:line`, in `completion_notes` and one line of
+`completion_summary` — **never** a `category: "security"` issue, at any
+severity, which is fixed or escalated instead. A `critical` is **exempt** from
+the cap and blocks at any round number; where it cannot be fixed the task stops
+at `review_blocked` (`failure.kind: "review_escalation"`) rather than being
+recorded and submitted.
+
+The rule is stated **once**, in `stride-workflow` Step 5, under a
+`<!-- canon:review-round-cap v1 -->` anchor. Every other site defers to it:
+the D66 re-review paragraph, the `stride-subagent-workflow` issues-found
+bullets and its re-review and extraction sections, both Complete Completion
+Process variants, and a new bullet in the completing-tasks hard gate. Two
+copies of a rule is how the D221 drift this port has already been bitten by
+starts.
+
+**Judgement call 1 — what counts as a round.** The reference anchors the count
+on `$MERGED`, the merged result file its Source A / Source B extraction split
+writes. **Copilot has neither**: its reviewer returns the structured block
+inline, and there is no file-based reviewer path anywhere in the port. So the
+anchor moved to the artifact this port *does* already name — a round is a
+`task-reviewer` dispatch whose response yielded a **parsable** fenced ```json
+block, the block the "Extracting the structured review block" section already
+extracts. That is the same threshold under a different surface: both count a
+round when a block was *parsed*, not when a dispatch was *attempted*, so the
+carve-out that a crashed reviewer must not eat a round falls out rather than
+being bolted on. `$MERGED` and `.review-rounds-<IDENTIFIER>.json` now each
+appear exactly once in the port, as prohibitions against importing them; cases
+`23e` pin that they never become live mechanisms.
+
+**Judgement call 2 — no counter file was invented.** A
+`.stride/.review-rounds-<ID>.json` that only an agent writes and only an agent
+reads is exactly as skippable as the instruction it would replace — this port's
+own W2147 finding, and the reason the loop-state record is written by the hook
+rather than the agent. No copilot hook can observe an agent dispatch, so there
+is no non-agent writer available. The count therefore lives in the
+orchestrator's context and touches no file. The state that gives up is handled
+by failing **closed**: where the round number cannot be established — a resumed
+or compacted session — the next dispatch is treated as **round two**, never as
+round one.
+
+**Judgement call 3 — this is prose, not a pin, and it says so.** What shipped
+is a normative instruction. Nothing in this port refuses a third dispatch.
+`stride-workflow` Step 5 carries the sentence "This cap is stated, not
+mechanically enforced." and three stated limits beneath it; the hard-gate
+bullet says in its own words that it is a self-report. That is what the
+reference itself does for `CRITICAL_CLEARED`, and stating the limit is the
+whole point — a rule that reads like a pin and is not one is worse than a rule
+that admits what it is. `dispatch_count` telemetry (W2157) is the first surface
+that could make the cap server-visible, and is deliberately not pre-empted
+here.
+
+**A contradiction closed.** `stride-subagent-workflow` said "After fixing, you
+do NOT need to re-run the reviewer" directly beside a re-review section with
+nothing bounding how many rounds there could be. The clause was **bounded, not
+deleted** — Phase 3.5 quotes it verbatim, so rewriting it would dangle that
+citation. Case `23q` uses a whole-line match to prove the unbounded form is
+gone (a substring test would keep passing, since the amended bullet still
+starts with the same words), and `23r` proves the quoted phrase survives in
+both the bullet and its citation.
+
+### Fixed in the same task — four defects the review round found (W2155 round two)
+
+The cap survived its own review round; its **edges** did not. All four were
+found before the change shipped — one by the specialist security reviewer, one
+by an exploratory session chartered against the cap's own stranding risk, one
+by the paper walkthrough the task's `integration_tests` asked for, and three
+more by the code reviewer.
+
+**The harden step mandated a round the cap forbade.** Step 5.6 / Phase 3.6
+orders a re-review whenever a hardened check enters the test tree, and says in
+terms not to weigh whether the edit was substantial. Nine such post-review
+re-review sites existed across four files and the README, and **not one of them
+deferred to the new ceiling** — while the cap's own limits paragraph claimed the
+rule was "not contradicted elsewhere in the port". An agent that obeyed the
+harden step ran a third round for a non-critical reason and then met a hard gate
+whose only sanctioned third round is one clearing a `critical`, and whose remedy
+for a failed check is another re-run: no terminating exit. An agent that obeyed
+the cap instead shipped unreviewed executable code with a cited reason to do it.
+
+The fix is a rule, not nine cross-references: **three dispatches are not rounds.**
+The cap bounds the find-and-fix loop *over one diff*, so a dispatch that is not
+another turn of that loop does not spend a round — a crashed one, a review of
+material no earlier round saw (the harden case), and a repair demanded by the
+completion self-check. Each is scoped to its own reason, and findings it raises
+about already-reviewed lines are treated as if they had arrived at the ceiling,
+so this buys no rounds. The harden step, Phase 3.6 and the completion gate each
+say so locally, because a reader who lands there and never returns to Step 5
+must still get it right.
+
+**The third of those was a deadlock nobody had reported yet.** The completion
+gate mandates a reviewer re-run on *any* failed check and budgets no rounds for
+it, so a passthrough defect surfacing at the ceiling would have pitted the gate
+against the cap with no compliant exit. Found by walking a task through the
+review path on paper, which is exactly what the task's `integration_tests` asked
+for and the reason that step is worth doing.
+
+**The security carve-out never fired on the single-round path.** It was
+grammatically inside the "after round two" disposition — in all three copies —
+while the port makes one round the default and an unamended neighbouring bullet
+still called `minor` issues optional. A `category: "security"`, `severity:
+"minor"` finding from round one was therefore neither fixed nor recorded. The
+rule is now stated **outside** the cap: never recorded, at any severity, at any
+round number, round one included, and the `minor`-issues bullet excludes it
+explicitly.
+
+**And it keyed on the wrong thing.** The carve-out named `category: "security"`,
+but a security control failing a `CODE-REVIEW.md` bullet arrives as `category:
+"project_check"` — at the reviewer's documented default `important`, the one
+default this port actually does document. An unauthenticated mutation route
+could have been recorded and shipped under a rule the prose itself describes as
+written for nits. The carve-out now keys on **subject matter**, not the category
+string.
+
+**Two smaller ones.** The fail-closed round-two default capped dispatches but
+also silently licensed *recording* on a compacted session that had never run a
+real round one — recording now requires having seen a round-one findings list
+and fixed against it. And both Complete Completion Process variants read as
+capping Critical fixes; Critical is now split out at both.
+
+### Fixed — the security carve-out's restatements, after a specialist re-check
+
+The specialist security review was re-run against the round-two fixes and came
+back `partial` a second time — on a narrower gap, and a real one. The **canon**
+now keyed on subject matter, but its two **restatements** still enumerated
+`category: "security"` and `project_check` and stopped there. The reviewer's
+category enum has seven values, and security substance lands in others
+routinely: a violated "don't log tokens" pitfall arrives as `category:
+"pitfall"`, a hardcoded credential noted during review as `code_quality`, both
+`important` by default. The restatement that mattered most is the hard-gate
+bullet — the last check before the PATCH — and it deferred for the round
+definition but not for the security rule. **Both restatements now say the two
+routes are examples, not the test.**
+
+Two more from the same pass. **"Fixed, or escalated" had only one working
+limb:** the single named non-submit exit (`review_blocked` /
+`review_escalation`) was textually bound to `critical`, so an `important` or
+`minor` security finding that could not be fixed faced three prohibitions and
+no compliant path — and that pressure resolves toward submitting. The escalate
+limb now names that exit explicitly, **whatever severity the finding carries**.
+And the one recording instruction added by the non-round paragraph — "record
+which dispatches you treated as non-rounds, and why" — was unbounded free text
+into a persisted, rendered sink, where every sibling instruction constrains its
+payload; it now carries the same redaction pointer, which matters because
+reason 2's "why" describes harden-drafted material this port classifies as
+application-influenced text.
+
+Cases `23ah`, `23ai` and `23aj` pin all three, so no site can drift back to a
+bare enumeration or lose the exit.
+
+### Recorded, not fixed — round two's remaining findings
+
+The cap this release ships says remaining `important` and `minor` findings after
+round two are recorded rather than fixed, security excepted. Applying that rule
+to this task's own review, three `minor` `code_quality` findings from round two
+are recorded here rather than fixed:
+
+- `minor` / `code_quality` / `skills/stride-workflow/SKILL.md:237` — three
+  consecutive blank lines where the section uses one. Presentational only; no
+  assertion, anchor arithmetic or grep depends on it.
+- `minor` / `code_quality` / `skills/stride-workflow/SKILL.md:241` — non-round
+  carve-out 2 ("a dispatch reviewing material no previous round saw") states its
+  trigger more broadly than its worked example, so an agent could argue that
+  fixes it wrote in response to round one are themselves unseen material and
+  spend an extra dispatch. The outcome constraint one paragraph later already
+  forces any finding such a dispatch raises about already-reviewed lines onto
+  the at-ceiling disposition, so the loophole buys tokens rather than fixes.
+- `minor` / `code_quality` / `hooks/test-stride-hook.sh:5676` — the `23ag`
+  sweep's skip-list carries a deference keyword (`same terms as a check`) that
+  no current mandate line contains: a pre-authorized exemption inside an
+  assertion whose purpose is to refuse exemptions. It would silently absolve a
+  future undeferred mandate that happened to carry the phrase. The other five
+  keyword skips are live and load-bearing.
+
+The security findings above were **not** recorded under that rule, because the
+rule this release ships exempts them — which is the point of the exemption, and
+this task is the first thing to test it.
+
+### Added — hook suite coverage
+
+**Test Group 23** (bash) and **Test Group 20** (PowerShell), **65 cases each**,
+mirrored case-for-case and verified label-for-label. They pin that the rule is stated, stated exactly once,
+placed inside the hard gate rather than merely somewhere in the file, and not
+contradicted elsewhere — plus the anchor sitting on the line immediately above
+the sentence it governs, and negative pins holding the W2156 (`cosmetic`,
+`schema_version` `1.7`) and W2157 (`dispatch_count`) boundaries so this task
+cannot silently pre-empt the next two.
+
+**The port-wide contradiction sweep is the case that would have caught the
+harden defect**, and it did not exist in round one — the group built a
+whole-port text variable and then used it for a single assertion. It now sweeps
+every markdown contract for the known competing re-review phrasings and requires
+each hit to sit beside a deference, skipping flow-diagram lines that restate
+prose. It was proven to bite by injecting an undeferred mandate and watching it
+go red. It is a **keyword** sweep, not a proof of consistency — a contradiction
+phrased in words it does not carry passes it — and stated-limit 1 in the
+contract now says exactly that, where round one had claimed the group pinned
+non-contradiction outright.
+
+**No executed half was written, and that is a decision rather than a gap.** The
+reference's Group 36 `awk`-extracts its `round_cap_ok` jq out of
+`review-block-extraction.md` and `eval`s it, so the test runs the contract's
+own bytes. Copilot ships no executable check to extract — the cap is prose — so
+there is nothing to extract. Hand-*inventing* check logic to have an executed
+half would be W2127's defect in a new costume: there, 25 hand-retyped
+assertions went green over a real defect precisely because they tested the
+retyping. Both group headers record this, and record that a green group means
+"the contract says the right thing", never "the cap is enforced".
+
+**Two mirror-fidelity fixes.** The bash half counted with `grep -c`, which
+counts matching **lines**, while the PowerShell half counts **occurrences** —
+so four exact-count cases asserted subtly different propositions and would have
+diverged the first time a needle appeared twice on one line. Bash now counts
+occurrences too. And the bash half's file list was word-split from `find`
+output; with `set -f` unset, a future markdown filename carrying a space or a
+glob character would have silently shrunk the scanned set — which, because the
+sweeps are exactly-zero and exactly-one assertions, would have made them **pass**
+rather than fail. It is read into an array.
+
+### Fixed — `assert_contains` failed on large haystacks under `pipefail`
+
+Found while writing Group 23. The helper piped its haystack into `grep -q`,
+which exits at the first match and closes the pipe — SIGPIPE-ing a writer still
+pushing bytes. Under this file's `set -o pipefail` that turned a genuine
+**match** into status 141 and failed the assertion. It only bites past the
+~64KB pipe buffer, which is why 22 groups of small fixtures never saw it and
+Group 23's whole-contract haystacks did immediately: every assertion against
+`skills/stride-workflow/SKILL.md` (119KB) failed while the same needle grepped
+directly from the file passed. The helper now uses a herestring, and `--` so a
+needle beginning with `-` cannot be read as an option. The PowerShell half uses
+`.Contains()` and never had the bug.
+
 ## [2.36.0] - 2026-09-02
 
 ### Added — the loop gate: a completion record, an `agentStop` gate, and the coverage that proves it (G423)
