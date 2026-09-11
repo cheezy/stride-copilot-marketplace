@@ -246,6 +246,18 @@ GitHub Copilot CLI does expose a refusable session end. It fires `agentStop`
 session indefinitely. None of that is exercised here: **no stop gate is
 registered in `hooks/hooks.json`**, which carries tool hooks only.
 
+**And the fleet's stdout-preservation guard is outside this port for the same
+structural reason.** Elsewhere that guard refuses a Stride API request written to
+hide its reply — `-o`, a `>` redirect, a pipe into `jq` — because in the plugins
+that call a board, the reply is where a task's per-file diff comes from, and
+hiding it loses the diff with nothing to notice. This port never issues such a
+request: nothing in `hooks/hooks.json` intercepts one, and there would be none to
+intercept. With no call there is no reply to conceal and nothing for a guard to
+stand in front of. State it as a current fact rather than a permanent exemption —
+the day this port gains a completion call is the day it gains a reply worth
+protecting, and this paragraph should be revisited then rather than treated as
+settled.
+
 That is a deliberate consequence of what this plugin is rather than a gap left
 open. A stop gate in this fleet exists to catch one situation — a finished task
 with more claimable work waiting — and this port has no queue to consult and

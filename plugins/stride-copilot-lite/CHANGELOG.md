@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — why no guard on hidden API replies is owed here (W2186)
+
+`hooks/hooks.json` intercepts no Stride API request, and the README now explains
+that this is because there is none to intercept: the plugin issues none at all, so
+the reply the fleet's stdout-preservation guard exists to protect never exists
+here. Written next to the session-end section so a reader auditing this port for
+missing fleet mechanisms finds both answers in one place, and phrased so it must
+be revisited if the port ever gains a completion call.
+
 ### Added — a statement of how a session ends here, and its anchor (D306)
 
 The note added in W2171 recorded that canon entry `stop-hook-capability` was
