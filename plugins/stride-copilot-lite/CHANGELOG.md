@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.9.0] - 2026-10-01
 
 ### Added — why no guard on hidden API replies is owed here (W2186)
 
@@ -27,6 +27,10 @@ task markdown and talks to no server, so it has no queue to check and no
 completion to remember, and a gate would have nothing to refuse on. The canon row
 stays `required`, since the runtime is capable; the anchor now sits beside that
 statement with its back-reference below.
+
+### Added — a release runbook for this repository (W2173)
+
+`RELEASE.md` records how this repository is released, as its own history shows it: which file holds the version, how the changelog is shaped (with any ambiguity in that history stated rather than resolved), whether a catalog must be synced afterwards, and the one-line check for whether the changelog's top heading is already tagged — the check that would have caught entries appended under a released heading. Documentation only; no behaviour changes.
 
 ## [0.8.0] - 2026-09-07
 
