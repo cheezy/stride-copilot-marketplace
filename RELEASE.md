@@ -57,7 +57,12 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
    bash ../stride/scripts/check-port-canon.sh
    ```
 
-   Exit `0` is clean. Exit `1` lists the drift, and a line naming either copy vendored from this repo means that copy is behind its source port — go back to step 1 and re-vendor it rather than editing the vendored tree, which is the whole reason the copies are copies. A line naming a *port* instead is that port's to fix by placing the anchor beside its own statement of the rule — not by editing an `applies_to` row in the canon, which would only record that the port does not owe what it does. Exit `2` means no verdict was possible: the run proved nothing and its quiet is not a pass. It sits here, ahead of the commit, because a red result at this point costs one re-run of step 1 and nothing else.
+   Exit `0` is clean. Exit `2` means no verdict was possible: the run proved nothing, its quiet is not a pass, and the sync stops until it can be run. Exit `1` lists the drift, and a line naming a copy vendored from this repo can mean one of two different things — tell them apart before acting:
+
+   - **A stale copy** — the vendored tree is behind its source port. The tell: the port's *own* line for the same rule is clean, or the vendored tree differs from the port (`diff -r` with the same eight excludes the step 1 `rsync` uses, for example `diff -r --exclude=.git --exclude=.stride --exclude=.stride_auth.md --exclude=.env --exclude=.env.local --exclude='*.local' --exclude=.stride-env-cache --exclude=.stride-changed-files.json ../stride-copilot-lite plugins/stride-copilot-lite`). This blocks the sync: go back to step 1 and re-vendor, then re-run this step. Never fix it by editing the vendored tree — that is the whole reason the copies are copies.
+   - **A faithful copy of a port-side gap** — the port's own line for the same rule is red too, and `diff -r` as above prints nothing: the copy is byte-identical to the port, and the gap is in the port. Re-vendoring cannot clear it, so it is not this sync's defect. It is the source port's: the fix is the anchor placed beside the port's own statement of the rule, released from the port, then re-vendored here. Do not hold this sync hostage to it and do not hand-edit the copy — record it instead: name the rule and the copy in the sync commit body and in the catalog release notes, as a known port-side gap this release carries. (`stride/docs/port-canon.md` asks that a non-zero result be read as blocking; for a faithful copy the release it blocks is the source port's, and this note is how the catalog makes that visible rather than silent.)
+
+   Compare against the port's working tree, as `rsync` does — not against its last tag; the catalog vendors the port's checkout, so a tag-based diff reports differences that are not drift. A line naming a *port* instead is that port's to fix by placing the anchor beside its own statement of the rule — not by editing an `applies_to` row in the canon, which would only record that the port does not owe what it does. This step sits here, ahead of the commit, because a red result at this point costs one re-run of step 1 and nothing else.
 
 6. **Scan for secrets**, then commit and push:
 
@@ -96,7 +101,7 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 - [ ] `marketplace.json` plugin entry `version` == vendored `plugin.json` version
 - [ ] README `Plugins` table version updated to match
 - [ ] Verify command prints `synced at X.Y.Z`
-- [ ] Port-canon drift check run; neither copy vendored from this repo appears in its output
+- [ ] Port-canon drift check run; every line naming a copy vendored from this repo is gone, or is classified as a faithful port-side gap and recorded in the commit body and release notes
 - [ ] Secret scan returns zero output, committed and pushed
 - [ ] Catalog tagged `vA.B.C` — next free number in this repo's series, not the plugin's `X.Y.Z` — and the tag pushed
 - [ ] GitHub release cut for `vA.B.C`, with the user's explicit authorization in that turn
@@ -160,7 +165,7 @@ Assume the new plugin `<name>` has a tagged release `vX.Y.Z`. From the repositor
 - [ ] `metadata.version` bumped (minor)
 - [ ] README `Plugins` table row added
 - [ ] Verify command prints `all N plugins resolve and versions match`
-- [ ] Port-canon drift check run; the new vendored copy does not appear in its output
+- [ ] Port-canon drift check run; the new vendored copy does not appear in its output, or appears only as a faithful port-side gap that is recorded
 - [ ] Secret scan returns zero output, committed and pushed
 
 ## About the secret-scan pattern
