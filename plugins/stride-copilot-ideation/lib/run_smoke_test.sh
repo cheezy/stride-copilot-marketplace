@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for the stride-ideation-stridify pipeline.
 #
-# Composes every helper the stride-ideation-stridify skill invokes — in
-# the same order — and verifies each stage produces the expected output.
+# Exercises the helpers the stride-ideation-stridify skill reaches through
+# Step 3, Step 8a and lib/ship.sh — validate_batch.py (Stage 1),
+# read_auth.py (Stage 3) and strip_audit_fields.py (Stage 4) — and verifies
+# each produces the expected output. The stage order is this runner's own,
+# not the skill's. The other stages are checks the skill itself never
+# runs: Stage 2 runs drift_check.py to confirm the fixture batch's
+# source_spec_sha256 still matches its requirements doc, Stage 5 renders a
+# canned 2xx response in the Step 10 table format (the real renderer,
+# lib/ship_support.py render, is covered by lib/test-ship.sh), and
+# Stage 6 checks the challenge-gate fixture's shape.
 # The final HTTP POST is dry-run by default (no actual network
 # call) so this runner is safe to execute in CI or against any
 # checkout. Pass --live <stride-batch.json> to POST against a real
@@ -16,9 +24,10 @@
 #       response-rendering code is also exercised.
 #
 #   ./lib/run_smoke_test.sh --live <stride-batch.json>
-#       LIVE mode. Reads auth from $CLAUDE_PROJECT_DIR/.stride_auth.md
-#       and POSTs the supplied batch to the Stride API. Use a dev
-#       Stride instance — this creates real tasks.
+#       LIVE mode. Ships the supplied batch through lib/ship.sh, which
+#       reads .stride_auth.md ($STRIDE_AUTH_FILE, else the git toplevel,
+#       else pwd) and POSTs it to the Stride API. Use a dev Stride
+#       instance — this creates real tasks.
 #
 # Exit code: 0 if every stage passes; non-zero on the first failure.
 
@@ -74,7 +83,7 @@ rm -f /tmp/sm-validate.err
 
 # --- Stage 2: drift_check.py ------------------------------------------------
 
-printf '\nStage 2: source-spec drift check\n'
+printf '\nStage 2: fixture source-spec drift check (drift_check.py; not a skill step)\n'
 python3 "${SCRIPT_DIR}/drift_check.py" "$BATCH_PATH" 2>/tmp/sm-drift.err
 DRIFT_EXIT=$?
 case "$DRIFT_EXIT" in
@@ -119,6 +128,7 @@ rm -f "$TMP_AUTH" /tmp/sm-auth.err
 # --- Stage 4: strip_audit_fields.py ----------------------------------------
 
 printf '\nStage 4: strip local-audit fields from the payload\n'
+SHA_BEFORE="$(shasum -a 256 "$BATCH_PATH" | awk '{print $1}')"
 if STRIPPED="$(python3 "${SCRIPT_DIR}/strip_audit_fields.py" "$BATCH_PATH" 2>/tmp/sm-strip.err)"; then
   if printf '%s' "$STRIPPED" | grep -q '"source_spec"'; then
     nope "stripped payload still contains source_spec" ""
@@ -145,11 +155,12 @@ else
 fi
 rm -f /tmp/sm-strip.err
 
-# Confirm the on-disk file is unchanged.
+# Confirm the on-disk file is unchanged: the strip writes only to stdout.
 SHA_AFTER="$(shasum -a 256 "$BATCH_PATH" | awk '{print $1}')"
-SHA_STAMPED="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('source_spec_sha256',''))" "$BATCH_PATH" 2>/dev/null || true)"
-if [ -n "$SHA_AFTER" ]; then
-  ok "on-disk batch JSON SHA: $SHA_AFTER (unchanged after strip)"
+if [ -n "$SHA_BEFORE" ] && [ "$SHA_BEFORE" = "$SHA_AFTER" ]; then
+  ok "on-disk batch JSON unchanged after strip (SHA-256 $SHA_AFTER before and after)"
+else
+  nope "on-disk batch JSON changed during the strip" "before=$SHA_BEFORE after=$SHA_AFTER"
 fi
 
 # --- Stage 5: response-rendering (always exercised — uses a canned 2xx) ----
@@ -242,49 +253,14 @@ fi
 if [ "$MODE" = "live" ]; then
   printf '\nStage 7: LIVE POST to the Stride API (NOTE: creates real tasks)\n'
 
-  AUTH_FILE="${CLAUDE_PROJECT_DIR:-$PWD}/.stride_auth.md"
-  if [ ! -f "$AUTH_FILE" ]; then
-    nope "--live requires .stride_auth.md at $AUTH_FILE" ""
+  # Ship through lib/ship.sh — the same single process the stridify skill's
+  # Step 9 runs — so the token stays off argv here too. Its stderr and stdout
+  # (verbatim body on failure, identifier table on success) pass straight
+  # through.
+  if bash "${SCRIPT_DIR}/ship.sh" "$BATCH_PATH"; then
+    ok "live: lib/ship.sh shipped the batch"
   else
-    if AUTH_OUT_LIVE="$(python3 "${SCRIPT_DIR}/read_auth.py" "$AUTH_FILE" 2>/tmp/sm-live-auth.err)"; then
-      eval "$AUTH_OUT_LIVE"
-      unset AUTH_OUT_LIVE
-      LIVE_PAYLOAD="$(python3 "${SCRIPT_DIR}/strip_audit_fields.py" "$BATCH_PATH")"
-
-      LIVE_RESP="$(mktemp -t sm_live_resp.XXXXXX.json)"
-      LIVE_CODE="$(curl -sS -X POST \
-        -H "Authorization: Bearer $STRIDE_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "$LIVE_PAYLOAD" \
-        "$STRIDE_API_URL/api/tasks/batch" \
-        -o "$LIVE_RESP" \
-        -w '%{http_code}')"
-      unset STRIDE_API_TOKEN
-
-      case "$LIVE_CODE" in
-        2*)
-          ok "live POST returned HTTP $LIVE_CODE"
-          printf '\nCreated identifiers:\n'
-          python3 - "$LIVE_RESP" <<'PY'
-import json, sys
-with open(sys.argv[1]) as fp:
-    data = json.load(fp)
-container = data.get("data", data)
-for goal in container.get("goals", []):
-    print(f"  {goal.get('identifier', '?'):>6}  {goal.get('title', '')}")
-    for task in goal.get("tasks", []) or []:
-        print(f"  {task.get('identifier', '?'):>6}    {task.get('title', '')}")
-PY
-          ;;
-        *)
-          nope "live POST returned HTTP $LIVE_CODE" "$(cat "$LIVE_RESP")"
-          ;;
-      esac
-      rm -f "$LIVE_RESP"
-    else
-      nope "live: read_auth.py failed" "$(cat /tmp/sm-live-auth.err)"
-    fi
-    rm -f /tmp/sm-live-auth.err
+    nope "live: lib/ship.sh exited non-zero (its stderr is above)" ""
   fi
 fi
 

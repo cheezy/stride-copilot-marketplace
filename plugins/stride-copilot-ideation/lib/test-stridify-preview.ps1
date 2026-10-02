@@ -1,7 +1,7 @@
-# PowerShell mirror of test-stridify-preview.sh — exercises the
-# stride-ideation-stridify Step 8.5 preview-and-approval gate and the Step 1
-# --yes / --auto-approve bypass documented in
-# skills/stride-ideation-stridify/SKILL.md (W1147).
+﻿# PowerShell mirror of test-stridify-preview.sh — exercises the
+# stride-ideation-stridify Step 8.5 preview-and-approval gate, the Step 1
+# --yes / --auto-approve bypass (W1147) and the Step 1 / 1b --batch mode
+# (W2193) documented in skills/stride-ideation-stridify/SKILL.md.
 #
 # The platform question UI is only available inside a live Copilot CLI session,
 # so this test embeds a reference implementation of the documented flag parse +
@@ -37,6 +37,38 @@ function Parse-YesFlag([string]$ArgString) {
         else { $rest += $t }
     }
     return @{ AutoApprove = $yes; Remainder = ($rest -join ' ') }
+}
+
+# --- reference --batch parser ------------------------------------------------
+# Mirrors SKILL.md Step 1's --batch rules. Returns
+#   batch=<path>|yes=<true|false>|err=<usage|goal|doc|>|rest=<remainder>
+function Parse-BatchArgs([string]$ArgString) {
+    $toks = @($ArgString -split '\s+' | Where-Object { $_ -ne '' })
+    $batch = ''; $haveBatch = $false; $goal = ''; $yes = $false; $rest = @(); $err = ''
+    for ($i = 0; $i -lt $toks.Count; $i++) {
+        $t = $toks[$i]
+        if ($t -ceq '--batch') {
+            $haveBatch = $true
+            if ($i + 1 -lt $toks.Count -and -not $toks[$i + 1].StartsWith('--')) { $batch = $toks[$i + 1]; $i++ } else { $err = 'usage' }
+        } elseif ($t.StartsWith('--batch=')) {
+            $haveBatch = $true; $batch = $t.Substring(8); if (-not $batch) { $err = 'usage' }
+        } elseif ($t -ceq '--goal') {
+            if ($i + 1 -lt $toks.Count) { $goal = $toks[$i + 1] }; $i++
+        } elseif ($t.StartsWith('--goal=')) {
+            $goal = $t.Substring(7)
+        } elseif ($t -ceq '--yes' -or $t -ceq '--auto-approve') {
+            $yes = $true
+        } else {
+            $rest += $t
+        }
+    }
+    $restText = $rest -join ' '
+    if (-not $err) {
+        if ($haveBatch -and $goal) { $err = 'goal' }
+        elseif ($haveBatch -and $restText) { $err = 'doc' }
+        elseif (-not $haveBatch -and -not $restText) { $err = 'usage' }
+    }
+    return "batch=$batch|yes=$($yes.ToString().ToLowerInvariant())|err=$err|rest=$restText"
 }
 
 # --- reference preview render ----------------------------------------------
@@ -87,8 +119,8 @@ function Render-AndGate([string]$BatchPath, [bool]$AutoApprove, [string]$Answer,
         Set-Content -LiteralPath $LogPath -Encoding UTF8 -Value ($out -join "`n")
         return 0
     }
-    $out.Add("stride-ideation: declined. The batch JSON is on disk at $BatchPath") | Out-Null
-    $out.Add('(committed in git) for a later manual ship. No POST was attempted.') | Out-Null
+    $out.Add("stride-ideation: declined. The batch JSON is on disk at $BatchPath; no POST was attempted.") | Out-Null
+    $out.Add("Ship it later, unchanged, by activating stride-ideation-stridify with: --batch `"$BatchPath`"") | Out-Null
     Set-Content -LiteralPath $LogPath -Encoding UTF8 -Value ($out -join "`n")
     return 10
 }
@@ -196,10 +228,15 @@ try {
     } else {
         Fail 'case 3: declined batch JSON was rewritten (pitfall violated)'
     }
-    if (Select-String -LiteralPath $logDecline -Pattern 'No POST was attempted' -SimpleMatch -Quiet) {
+    if (Select-String -LiteralPath $logDecline -Pattern 'no POST was attempted' -SimpleMatch -Quiet) {
         Pass 'case 3: decline message states the POST was not attempted'
     } else {
-        Fail "case 3: decline message missing 'No POST was attempted'"
+        Fail "case 3: decline message missing 'no POST was attempted'"
+    }
+    if ((Get-Content -Raw -LiteralPath $logDecline).Contains("--batch `"$batch`"")) {
+        Pass 'case 3: decline message names the --batch form for this file'
+    } else {
+        Fail 'case 3: decline message does not name --batch'
     }
 
     # === case 4: approve path proceeds to POST (AC2) =======================
@@ -248,6 +285,150 @@ try {
     } else {
         Pass 'case 8: no Bearer/token/Authorization strings in preview or gate output (pitfall avoided)'
     }
+
+    # === cases 9-14: --batch parse ==========================================
+    $parseCases = @(
+        @('case 9: --batch <path> selects batch mode', '--batch docs/x-stride-batch.json', 'batch=docs/x-stride-batch.json|yes=false|err=|rest='),
+        @('case 10: --batch=<path> splits on the first = only', '--batch=docs/a=b.json', 'batch=docs/a=b.json|yes=false|err=|rest='),
+        @('case 11a: a bare trailing --batch is a usage error', '--batch', 'batch=|yes=false|err=usage|rest='),
+        @('case 11b: --batch= with no value is a usage error', '--batch=', 'batch=|yes=false|err=usage|rest='),
+        @('case 11c: --batch followed by a flag never takes the flag as its path', '--batch --yes', 'batch=|yes=true|err=usage|rest='),
+        @('case 12: --batch together with --goal is rejected', '--batch b.json --goal 2', 'batch=b.json|yes=false|err=goal|rest='),
+        @('case 12b: --goal=<v> before --batch=<v> is rejected too', '--goal=2 --batch=b.json', 'batch=b.json|yes=false|err=goal|rest='),
+        @('case 13: --batch with a requirements-doc path left over is rejected', '--batch b.json docs/x-requirements.md', 'batch=b.json|yes=false|err=doc|rest=docs/x-requirements.md'),
+        @('case 14a: --batch --yes keeps the path and sets the bypass', '--batch b.json --yes', 'batch=b.json|yes=true|err=|rest='),
+        @('case 14b: no --batch and no doc path is a usage error', '--yes', 'batch=|yes=true|err=usage|rest=')
+    )
+    foreach ($c in $parseCases) {
+        $got = Parse-BatchArgs $c[1]
+        if ($got -ceq $c[2]) { Pass $c[0] } else { Fail $c[0] "got: $got" }
+    }
+
+    # === cases 15-20: the PowerShell-host --batch path against a mocked HTTP layer ===
+    # Step 1b on a PowerShell-only host runs validate_batch.py, then
+    # ship.ps1 -CheckPayload; Step 9 runs ship.ps1 -Batch. Each runs as a child
+    # process here; the "Stride API" is a raw TcpListener on 127.0.0.1 that
+    # answers one request with a canned 201.
+    $pluginRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+    $shipPs1 = Join-Path $pluginRoot 'lib/ship.ps1'
+    $validator = Join-Path $pluginRoot 'lib/validate_batch.py'
+    $pythonExe = if (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' }
+    $pwshExe = (Get-Process -Id $PID).Path
+    $token = 'stride_dev_PREVIEW_PS_TOKEN_7x2q'
+    $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    $script:Pending = $null
+    $port = $listener.LocalEndpoint.Port
+    $auth = Join-Path $tmpDir 'auth.md'
+    [System.IO.File]::WriteAllText($auth, "- **API URL:** ``http://127.0.0.1:$port```n- **API Token:** ``$token```n")
+    $created = '{"success": true, "total": 1, "goals": [{"goal": {"id": 1, "identifier": "G77", "title": "Goal", "type": "goal"}, "child_tasks": [{"id": 2, "identifier": "W901", "title": "Task"}]}]}'
+    $shipBatch = Join-Path $tmpDir 'declined-stride-batch.json'
+    Copy-Item -LiteralPath (Join-Path $pluginRoot 'fixtures/2026-05-12T120000-dark-mode-toggle-stride-batch.json') -Destination $shipBatch
+
+    # Invoke-Child <exe> <args> — runs a child process with STRIDE_AUTH_FILE set,
+    # answering at most one request. Sets $script:CRc, COut, CErr, CRequests.
+    function Invoke-Child([string]$Exe, [string[]]$ChildArgs) {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Exe
+        $psi.Arguments = (@($ChildArgs | ForEach-Object { '"' + $_ + '"' })) -join ' '
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.EnvironmentVariables['STRIDE_AUTH_FILE'] = $auth
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $errTask = $p.StandardError.ReadToEndAsync()
+        $script:CRequests = 0
+        # One accept is kept pending across children: a fresh accept per child
+        # would leave the previous one waiting, and it would swallow the next
+        # connection without answering it.
+        if (-not $script:Pending) { $script:Pending = $listener.AcceptTcpClientAsync() }
+        $deadline = [DateTime]::UtcNow.AddSeconds(60)
+        while (-not $p.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+            if ($script:Pending.Wait(100)) {
+                $script:CRequests++
+                $conn = $script:Pending.Result
+                $script:Pending = $listener.AcceptTcpClientAsync()
+                $stream = $conn.GetStream()
+                $buf = New-Object byte[] 65536
+                $seen = ''
+                # Read until the declared body has arrived (headers + Content-Length).
+                while ($true) {
+                    $n = $stream.Read($buf, 0, $buf.Length)
+                    if ($n -le 0) { break }
+                    $seen += [System.Text.Encoding]::UTF8.GetString($buf, 0, $n)
+                    $he = $seen.IndexOf("`r`n`r`n")
+                    if ($he -ge 0) {
+                        $m = [regex]::Match($seen.Substring(0, $he), '(?i)content-length:\s*(\d+)')
+                        $want = if ($m.Success) { [int]$m.Groups[1].Value } else { 0 }
+                        if ([System.Text.Encoding]::UTF8.GetByteCount($seen.Substring($he + 4)) -ge $want) { break }
+                    }
+                }
+                $body = [System.Text.Encoding]::UTF8.GetBytes($created)
+                $head = [System.Text.Encoding]::ASCII.GetBytes("HTTP/1.1 201 Created`r`nContent-Type: application/json`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
+                $stream.Write($head, 0, $head.Length)
+                $stream.Write($body, 0, $body.Length)
+                $stream.Flush()
+                $conn.Close()
+            }
+        }
+        if (-not $p.HasExited) { $p.Kill(); $script:CRequests = -1 }
+        $p.WaitForExit()
+        $script:CRc = $p.ExitCode
+        $script:COut = $outTask.Result
+        $script:CErr = $errTask.Result
+    }
+
+    $shaBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $shipBatch).Hash
+    Invoke-Child $pythonExe @($validator, $shipBatch)
+    $vRc = $CRc; $vReq = $CRequests
+    Invoke-Child $pwshExe @('-NoProfile', '-NonInteractive', '-File', $shipPs1, '-CheckPayload', $shipBatch)
+    if ($vRc -eq 0 -and $vReq -eq 0 -and $CRc -eq 0 -and $CRequests -eq 0) {
+        Pass 'case 15: Step 1b (PowerShell) validates and token-screens a valid batch without a request'
+    } else {
+        Fail 'case 15: Step 1b (PowerShell) on a valid batch' "validate rc=$vRc check rc=$CRc requests=$CRequests err=$CErr"
+    }
+    Invoke-Child $pwshExe @('-NoProfile', '-NonInteractive', '-File', $shipPs1, '-Batch', $shipBatch)
+    if ($CRc -eq 0 -and $CRequests -eq 1 -and $COut.Contains('G77') -and $COut.Contains('W901')) {
+        Pass 'case 16: Step 9 (PowerShell) ships the --batch file once through ship.ps1 and renders the identifiers'
+    } else {
+        Fail 'case 16: Step 9 (PowerShell) ship' "rc=$CRc requests=$CRequests out=$COut err=$CErr"
+    }
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $shipBatch).Hash -eq $shaBefore) {
+        Pass 'case 17: the --batch file is byte-identical after shipping'
+    } else {
+        Fail 'case 17: the --batch file was rewritten'
+    }
+
+    $bad = Get-Content -Raw -LiteralPath $shipBatch | ConvertFrom-Json
+    $bad.goals[0].tasks[0].PSObject.Properties.Remove('type')
+    $badPath = Join-Path $tmpDir 'bad-stride-batch.json'
+    [System.IO.File]::WriteAllText($badPath, ($bad | ConvertTo-Json -Depth 20))
+    Invoke-Child $pythonExe @($validator, $badPath)
+    if ($CRc -eq 1 -and $CRequests -eq 0 -and $CErr.Contains("goals[0].tasks[0] is missing required field 'type'")) {
+        Pass 'case 18: an invalid batch fails validation before any request'
+    } else {
+        Fail 'case 18: invalid batch' "rc=$CRc requests=$CRequests err=$CErr"
+    }
+
+    $tok = Get-Content -Raw -LiteralPath $shipBatch | ConvertFrom-Json
+    $tok.decomposition_notes = "pasted: $token"
+    $tokPath = Join-Path $tmpDir 'token-stride-batch.json'
+    [System.IO.File]::WriteAllText($tokPath, ($tok | ConvertTo-Json -Depth 20))
+    Invoke-Child $pwshExe @('-NoProfile', '-NonInteractive', '-File', $shipPs1, '-CheckPayload', $tokPath)
+    if ($CRc -eq 1 -and $CRequests -eq 0 -and $CErr.Contains('contains the configured Stride API token') -and -not ("$COut$CErr").Contains($token)) {
+        Pass 'case 19: a batch carrying the API token is refused by -CheckPayload without printing it'
+    } else {
+        Fail 'case 19: token batch' "rc=$CRc requests=$CRequests"
+    }
+
+    Invoke-Child $pwshExe @('-NoProfile', '-NonInteractive', '-File', $shipPs1, '-CheckPayload', (Join-Path $tmpDir 'nope-stride-batch.json'))
+    if ($CRc -eq 1 -and $CErr.Contains('batch JSON not found at')) {
+        Pass 'case 20: a missing batch path stops -CheckPayload'
+    } else {
+        Fail 'case 20: missing batch path' "rc=$CRc err=$CErr"
+    }
+    $listener.Stop()
 } finally {
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
 }

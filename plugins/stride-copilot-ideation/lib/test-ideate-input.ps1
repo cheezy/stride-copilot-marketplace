@@ -1,4 +1,4 @@
-# PowerShell mirror of test-ideate-input.sh — exercises the
+﻿# PowerShell mirror of test-ideate-input.sh — exercises the
 # stride-ideation-ideate --input <file> brain-dump seed documented in
 # skills/stride-ideation-ideate/SKILL.md (W1144).
 #
@@ -30,15 +30,21 @@ function Parse-Flags([string]$ArgString) {
     $tokens = @($ArgString -split '\s+' | Where-Object { $_ -ne '' })
     $continuePath = ''
     $inputPath = ''
+    $err = ''
     $rest = @()
     $i = 0
     while ($i -lt $tokens.Count) {
         $t = $tokens[$i]
         if ($t -eq '--continue') {
-            $i++
-            if ($i -lt $tokens.Count) { $continuePath = $tokens[$i] }
+            if ($i + 1 -lt $tokens.Count -and -not $tokens[$i + 1].StartsWith('--')) {
+                $i++
+                $continuePath = $tokens[$i]
+            } else {
+                $err = 'continue-missing'
+            }
         } elseif ($t -like '--continue=*') {
             $continuePath = $t.Substring('--continue='.Length)
+            if (-not $continuePath) { $err = 'continue-missing' }
         } elseif ($t -eq '--input') {
             $i++
             if ($i -lt $tokens.Count) { $inputPath = $tokens[$i] }
@@ -49,7 +55,7 @@ function Parse-Flags([string]$ArgString) {
         }
         $i++
     }
-    return @{ Continue = $continuePath; Input = $inputPath; Remainder = ($rest -join ' ') }
+    return @{ Continue = $continuePath; Input = $inputPath; Remainder = ($rest -join ' '); Error = $err }
 }
 
 # --- reference --input validation ------------------------------------------
@@ -172,6 +178,33 @@ try {
         }
     } else {
         Fail 'case 7: empty --input file was rejected by validation'
+    }
+
+    # === case 8: --continue accepts both shapes, split on the first = only ===
+    $continueCases = @(
+        @('case 8a: --continue <path> sets CONTINUE_PATH', "--continue $prior", $prior, ''),
+        @('case 8b: --continue=<path> sets CONTINUE_PATH', "--continue=$prior", $prior, ''),
+        @('case 8c: --continue=<path> keeps an = inside the path', '--continue=docs/a=b-requirements.md', 'docs/a=b-requirements.md', ''),
+        @('case 8d: --continue= with an empty value is an error', '--continue= topic', '', 'continue-missing'),
+        @('case 8e: a bare trailing --continue is an error', 'topic --continue', '', 'continue-missing'),
+        @('case 8f: --continue followed by a flag never takes the flag as its path', "--continue --input $notes", '', 'continue-missing')
+    )
+    foreach ($c in $continueCases) {
+        $pc = Parse-Flags $c[1]
+        if ($pc.Continue -ceq $c[2] -and $pc.Error -ceq $c[3]) { Pass $c[0] } else { Fail $c[0] "path=[$($pc.Continue)] err=[$($pc.Error)]" }
+    }
+    $p8 = Parse-Flags "--continue=$prior --input=$notes"
+    if ($p8.Input -ceq $notes -and $p8.Continue -ceq $prior) {
+        Pass 'case 8g: --continue=<path> and --input=<path> parse together'
+    } else {
+        Fail 'case 8g: combined = forms' "continue=[$($p8.Continue)] input=[$($p8.Input)]"
+    }
+    $skillMd = Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) 'skills/stride-ideation-ideate/SKILL.md'
+    $skillText = [System.IO.File]::ReadAllText($skillMd)
+    if ($skillText.Contains('for the `--continue=<path>` form') -and $skillText.Contains('stride-ideation: --continue requires a path to a prior -requirements.md doc')) {
+        Pass 'case 8h: SKILL.md Step 1 documents --continue=<path> and the missing-value error'
+    } else {
+        Fail 'case 8h: SKILL.md Step 1 is missing a --continue rule this test mirrors'
     }
 } finally {
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue

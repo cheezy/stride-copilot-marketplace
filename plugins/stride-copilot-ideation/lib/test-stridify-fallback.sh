@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Tests for the /stride-ideation:stridify Step 7.5 retry-exhaustion fallback
-# documented in commands/stridify.md (W715). The Agent tool is only available
-# inside a live Claude Code session, so this test embeds a reference shell
+# Tests for the stride-ideation-stridify skill's Step 7.5 retry-exhaustion
+# fallback documented in skills/stride-ideation-stridify/SKILL.md (W715). The
+# agent dispatch is only available inside a live Copilot CLI session, so this
+# test embeds a reference shell
 # implementation of the documented retry loop + fallback and exercises it
 # against a mock subagent that always fails.
 #
 # The reference fallback implementation below MUST stay consistent with
-# Step 7.5 in stridify.md. If you edit one, edit both — this test exists to
+# Step 7.5 in SKILL.md. If you edit one, edit both — this test exists to
 # prevent the doc and the on-the-wire behavior from drifting apart.
 #
 # Run:
@@ -53,7 +54,7 @@ chmod +x "$TMP/mock_always_fail.sh"
 
 # --- reference fallback implementation -------------------------------------
 #
-# Mirrors stridify.md Step 7.5 a/b/c. Signature:
+# Mirrors SKILL.md Step 7.5 a/b/c. Signature:
 #   step_7_5_save_prompt_and_exit \
 #     <prompt-text> <last-error> \
 #     <source-path> <source-sha> <source-ts> \
@@ -104,11 +105,11 @@ step_7_5_save_prompt_and_exit() {
     printf '## Subagent prompt (literal — paste this into a fresh session)\n\n'
     printf '````\n%s\n````\n\n' "$prompt"
     printf '## Recovery instructions\n\n'
-    printf 'Paste the prompt block above into a fresh Claude session — any model capable\n'
-    printf 'of following the requirements-decomposer contract works. The session does\n'
-    printf 'NOT need codebase access. Save the resulting fenced JSON as %s.\n' "$target_batch_path"
-    printf 'Then run python3 <plugin-root>/lib/validate_batch.py on that path, and follow\n'
-    printf 'Step 9 of commands/stridify.md manually.\n\n'
+    printf 'Paste the prompt block above into a fresh session — any model capable\n'
+    printf 'of following the requirements-decomposer contract works. Save the\n'
+    printf 'resulting fenced JSON as %s. Then activate the\n' "$target_batch_path"
+    printf 'stride-ideation-stridify skill with:\n\n    --batch "%s"\n\n' "$target_batch_path"
+    printf 'which validates, previews and ships it through lib/ship.sh.\n\n'
     printf 'This sibling file contains NO authentication material — the decomposer\n'
     printf 'prompt has no API access by construction.\n'
   } > "$prompt_path" 2>"$TMP/write.err"
@@ -129,9 +130,10 @@ step_7_5_save_prompt_and_exit() {
     printf 'Saved decomposer prompt to: %s\n' "$prompt_path"
     printf 'Last error from the final attempt:\n  %s\n' "$(printf '%s' "$last_err" | head -n1)"
     printf '\n'
-    printf 'To recover: paste the prompt block from that file into a fresh Claude\n'
-    printf 'session; save the JSON response as %s; then run\n' "$target_batch_path"
-    printf '`python3 lib/validate_batch.py %s` and the manual POST per Step 9.\n' "$target_batch_path"
+    printf 'To recover: paste the prompt block from that file into a fresh session;\n'
+    printf 'save the JSON response as %s; then activate\n' "$target_batch_path"
+    printf 'stride-ideation-stridify with `--batch "%s"` to validate,\n' "$target_batch_path"
+    printf 'preview and ship it.\n'
     printf '\nThe Stride API POST was NOT attempted.\n'
   } >&2
   # The real implementation calls `exit 1`; the test wants control to return.
@@ -325,6 +327,21 @@ if grep -qF "The Stride API POST was NOT attempted" "$TMP/run1.log"; then
   pass "case 6: terminal summary explicitly states POST was not attempted"
 else
   fail "case 6: terminal summary missing 'POST NOT attempted' line"
+fi
+if grep -qF -- "--batch \"$TARGET_BATCH\"" "$TMP/run1.log" && grep -qF -- "--batch \"$TARGET_BATCH\"" "$expected_path"; then
+  pass "case 6: summary and recovery README name the --batch form for the target path"
+else
+  fail "case 6: summary or recovery README does not name --batch"
+fi
+# The skill's own Step 7.5 text must say the same, never a hand-written curl.
+SKILL_MD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/stride-ideation-stridify/SKILL.md"
+step75="$(sed -n '/^### Step 7.5/,/^### Step 8:/p' "$SKILL_MD")"
+if printf '%s' "$step75" | grep -qF -- '--batch "<BATCH_TARGET_PATH>"' \
+   && printf '%s' "$step75" | grep -qF -- '`--batch "<TARGET_PATH>"`' \
+   && ! printf '%s' "$step75" | grep -qE "bash '<PLUGIN_ROOT>/lib/ship.sh' '<"; then
+  pass "case 6: SKILL.md Step 7.5 README and summary point at --batch"
+else
+  fail "case 6: SKILL.md Step 7.5 does not point at --batch"
 fi
 
 # === case 7: pitfall — no token strings in saved file =====================

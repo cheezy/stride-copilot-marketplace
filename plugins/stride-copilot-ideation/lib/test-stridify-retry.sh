@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Tests for the /stride-ideation:stridify Step 7 retry classification documented
-# in commands/stridify.md. The Agent tool is only available inside a live
-# Claude Code session, so this test embeds a reference shell implementation of
-# the documented retry loop and exercises it against a mock subagent script.
+# Tests for the stride-ideation-stridify skill's Step 7 retry classification
+# documented in skills/stride-ideation-stridify/SKILL.md. The agent dispatch is
+# only available inside a live Copilot CLI session, so this test embeds a
+# reference shell implementation of the documented retry loop and exercises it
+# against a mock agent script.
 #
 # The reference implementation below MUST stay consistent with the pseudo-code
-# in stridify.md Step 7 (7a classification table, 7b backoff, 7c code-flow).
+# in SKILL.md Step 7 (7a classification table, 7b backoff, 7c code-flow).
 # If you edit one, edit both — the test exists to prevent the doc and the
 # real implementation from drifting apart.
 #
@@ -40,7 +41,7 @@ fail() {
 
 # --- mock subagent ----------------------------------------------------------
 #
-# The mock simulates the Agent tool: it consults a per-test counter file and
+# The mock simulates the agent dispatch: it consults a per-test counter file and
 # a per-test mode file, fails the first N calls, then succeeds.
 #
 #   counter file : integer; decremented each call until 0, then mock succeeds
@@ -84,7 +85,7 @@ chmod +x "$TMP/mock_agent.sh"
 
 # --- reference retry implementation ----------------------------------------
 #
-# Mirrors stridify.md Step 7 (7a/7b/7c). Backoffs are zeroed by default so the
+# Mirrors SKILL.md Step 7 (7a/7b/7c). Backoffs are zeroed by default so the
 # suite runs in well under a second; the documented schedule is 30s / 90s.
 
 MAX_ATTEMPTS=3
@@ -92,11 +93,27 @@ BACKOFF_1="${BACKOFF_1:-0}"
 BACKOFF_2="${BACKOFF_2:-0}"
 
 classify_dispatch_error() {
-  # Args: <err_text>. Echoes "transient" or "terminal".
-  local err_text="$1"
-  case "$err_text" in
-    *529*|*Overloaded*|*overloaded*) echo "transient"; return ;;
-    *"Could not resolve"*|*"Connection refused"*|*"timeout"*|*"TLS handshake"*) echo "transient"; return ;;
+  # Args: <err_text>. Echoes "transient", "unavailable" or "terminal".
+  # Provider-neutral: a rate-limit or capacity error from any model provider
+  # is transient, not only one vendor's wording. "unavailable" (no custom-agent
+  # support, or the host does not know the agent) means run the agent file
+  # inline once — never a retry.
+  local err_text lower
+  err_text="$1"
+  lower="$(printf '%s' "$err_text" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    *"unknown subagent"*|*"unknown agent"*|*"no such agent"*|*"agent"*"not found"*|*"custom agents"*"not supported"*|*"custom agents"*"unavailable"*)
+      echo "unavailable"; return ;;
+  esac
+  # Status codes match only as whole numbers (as the PowerShell mirror's \b
+  # does), so "14290 tokens" is not a 429.
+  if printf '%s' "$lower" | grep -Eq '(^|[^0-9])(429|503|529)([^0-9]|$)'; then
+    echo "transient"; return
+  fi
+  case "$lower" in
+    *"too many requests"*|*"service unavailable"*|*"rate limit"*|*"rate-limit"*|*"rate_limit"*|*overloaded*|*capacity*)
+      echo "transient"; return ;;
+    *"could not resolve"*|*"connection refused"*|*"timeout"*|*"tls handshake"*) echo "transient"; return ;;
     *) echo "terminal" ;;
   esac
 }
@@ -127,6 +144,12 @@ dispatch_with_retry() {
       printf 'TERMINAL: %s\n' "$last_error" >&2
       rm -f "$result_file"
       return 1
+    fi
+    if [ "$cls" = "unavailable" ]; then
+      # Never retried: the caller runs the agent file inline instead.
+      printf 'INLINE FALLBACK: %s\n' "$last_error" >&2
+      rm -f "$result_file"
+      return 3
     fi
     if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
       case "$attempt" in
@@ -238,14 +261,21 @@ else
   fail "case 5: 'overloaded' classified as $cls5 (expected transient)"
 fi
 
-# --- case 6: unknown subagent type classifies as terminal ------------------
+# --- case 6: an unknown agent means "run it inline", not terminal -----------
+#
+# The host lacks custom-agent support (or does not know the agent): the skill
+# runs agents/requirements-decomposer.agent.md inline instead of failing.
 
 cls6="$(classify_dispatch_error 'unknown subagent type: foo')"
-if [ "$cls6" = "terminal" ]; then
-  pass "case 6: unknown subagent type classifies as terminal"
+if [ "$cls6" = "unavailable" ]; then
+  pass "case 6: unknown subagent type classifies as unavailable (inline fallback)"
 else
-  fail "case 6: unknown subagent type classified as $cls6 (expected terminal)"
+  fail "case 6: unknown subagent type classified as $cls6 (expected unavailable)"
 fi
+for msg in "agent 'requirements-decomposer' not found" "Custom agents are not supported in this environment"; do
+  cls="$(classify_dispatch_error "$msg")"
+  if [ "$cls" = "unavailable" ]; then pass "case 6: '$msg' classifies as unavailable"; else fail "case 6: '$msg' classified as $cls (expected unavailable)"; fi
+done
 
 # --- case 7: network error (Connection refused) classifies as transient ----
 
@@ -255,6 +285,56 @@ if [ "$cls7" = "transient" ]; then
 else
   fail "case 7: 'Connection refused' classified as $cls7 (expected transient)"
 fi
+
+# --- case 7b: provider-neutral rate-limit and capacity errors are transient --
+
+for msg in "HTTP 429 Too Many Requests" "503 Service Unavailable" "Error: rate limit exceeded, retry after 20s" \
+           "rate_limit_error: request was throttled" "The model is at capacity, please try again later"; do
+  cls="$(classify_dispatch_error "$msg")"
+  if [ "$cls" = "transient" ]; then pass "case 7b: '$msg' classifies as transient"; else fail "case 7b: '$msg' classified as $cls (expected transient)"; fi
+done
+cls="$(classify_dispatch_error 'HTTP 400: Bad Request')"
+if [ "$cls" = "terminal" ]; then pass "case 7b: a hard 4xx other than 429 stays terminal"; else fail "case 7b: HTTP 400 classified as $cls (expected terminal)"; fi
+cls="$(classify_dispatch_error 'contract violation: response of 14290 tokens had no fenced JSON block')"
+if [ "$cls" = "terminal" ]; then pass "case 7b: a number that merely contains 429 (14290) stays terminal"; else fail "case 7b: '14290' classified as $cls (expected terminal)"; fi
+
+# --- case 7c: a mocked 429 is retried, then succeeds ----------------------------
+
+cat > "$TMP/mock429.sh" <<'EOF'
+#!/usr/bin/env bash
+# Fails with a 429 on the first call, then returns a valid fenced JSON block.
+n="$(cat "$1")"; n=$(( n + 1 )); echo "$n" > "$1"
+if [ "$n" -le 1 ]; then echo "HTTP 429 Too Many Requests" >&2; exit 1; fi
+printf '```json\n{"goals": []}\n```\n'
+EOF
+chmod +x "$TMP/mock429.sh"
+cp "$TMP/mock_agent.sh" "$TMP/mock_agent.sh.orig"
+cp "$TMP/mock429.sh" "$TMP/mock_agent.sh"
+echo 0 > "$TMP/counter7c"; echo x > "$TMP/mode7c"
+if dispatch_with_retry "$TMP/counter7c" "$TMP/mode7c" >/dev/null 2>"$TMP/log7c" && [ "$(cat "$TMP/counter7c")" = "2" ]; then
+  pass "case 7c: a mocked 429 is retried and the second attempt succeeds"
+else
+  fail "case 7c: a mocked 429 was not retried to success" "$(cat "$TMP/log7c")"
+fi
+
+# --- case 7d: an unavailable agent is not retried --------------------------------
+
+cat > "$TMP/mock_agent.sh" <<'EOF'
+#!/usr/bin/env bash
+n="$(cat "$1")"; n=$(( n + 1 )); echo "$n" > "$1"
+echo "unknown subagent type: requirements-decomposer" >&2
+exit 1
+EOF
+chmod +x "$TMP/mock_agent.sh"
+echo 0 > "$TMP/counter7d"; echo x > "$TMP/mode7d"
+dispatch_with_retry "$TMP/counter7d" "$TMP/mode7d" >/dev/null 2>"$TMP/log7d"
+rc7d=$?
+if [ "$rc7d" = "3" ] && [ "$(cat "$TMP/counter7d")" = "1" ] && grep -q '^INLINE FALLBACK:' "$TMP/log7d"; then
+  pass "case 7d: an unavailable agent hands off to the inline fallback after 1 attempt, no retry"
+else
+  fail "case 7d: unavailable agent rc=$rc7d attempts=$(cat "$TMP/counter7d")" "$(cat "$TMP/log7d")"
+fi
+cp "$TMP/mock_agent.sh.orig" "$TMP/mock_agent.sh"
 
 # --- case 8: attempt headers must NOT include the full prompt --------------
 #

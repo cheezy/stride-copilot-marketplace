@@ -13,9 +13,12 @@ Exits 1 on the first violation, printing a single line of the form:
 The named fatal error variants:
 
   (a) parse_error           - input is not valid JSON
-  (b) wrong_root_key        - root has 'tasks' or any key other than 'goals'
+  (b) wrong_root_key        - root has 'tasks' (instead of, or alongside,
+                              'goals') or any key other than 'goals'
   (c) empty_goals           - 'goals' is missing, not an array, or empty
-  (d) goal_missing_field    - a goal entry lacks title, type, or tasks
+  (d) goal_missing_field    - a goal entry lacks title, type, or tasks, or a
+                              task is not an object with a non-empty string
+                              title and a type of 'work' or 'defect'
   (e) bad_dependency_index  - a task's dependencies[] index references an
                               array slot that does not exist OR points to a
                               task at or after the referencing task's own
@@ -33,9 +36,9 @@ each renders an empty review-queue pill once the task ships. Warnings are
 non-fatal by design: the exit code stays 0, so decomposition can still be
 shipped without every field.
 
-Beyond (f) and the advisory pass, the validator still does NOT enforce
-per-task Stride-API field shapes (pitfalls-as-array-of-strings,
-verification_steps-as-objects, etc.). Those are the decomposer agent's
+Beyond (d)'s task title/type check, (f) and the advisory pass, the validator
+does NOT enforce other per-task Stride-API field shapes
+(pitfalls-as-array-of-strings, verification_steps-as-objects, etc.). Those are the decomposer agent's
 responsibility; the stride-ideation-stridify skill's Step 9 POST surfaces the
 API's own error if anything slips through. Length is checked ONLY on the fields
 the server actually bounds:
@@ -61,6 +64,9 @@ def warn(message: str) -> "None":
 # The server binds these columns to varchar(255), which limits by Unicode
 # code point — Python's len() on a str counts code points identically.
 MAX_VARCHAR = 255
+
+# A goal's tasks nest one level deep: each is a work item or a defect.
+TASK_TYPES = ("work", "defect")
 
 # The five review-queue scored fields; a missing or empty one renders an
 # empty pill on every task of every goal shipped through the stridify skill.
@@ -124,6 +130,14 @@ def validate(path: str) -> "None":
             )
         fail("root object is missing the required 'goals' array")
 
+    if "tasks" in doc:
+        fail(
+            "root has a stray 'tasks' key alongside 'goals' — Stride's "
+            "POST /api/tasks/batch reads only 'goals', so those tasks would be "
+            "silently dropped. Move them into a goal's 'tasks' array or remove "
+            "the root 'tasks' key."
+        )
+
     # (c) empty_goals
     goals = doc["goals"]
     if not isinstance(goals, list):
@@ -176,12 +190,26 @@ def validate(path: str) -> "None":
                     elem,
                 )
 
-        # (e) bad_dependency_index + (f) length_limit — task level
+        # (d) goal_missing_field, (e) bad_dependency_index and (f) length_limit — task level
         for task_idx, task in enumerate(goal["tasks"]):
+            where = f"goals[{goal_idx}].tasks[{task_idx}]"
+            # (d) goal_missing_field — task level
             if not isinstance(task, dict):
+                fail(f"{where} must be an object, got {type(task).__name__}")
+            for required in ("title", "type"):
+                if required not in task:
+                    fail(f"{where} is missing required field '{required}'")
+            if not isinstance(task["title"], str) or not task["title"].strip():
+                fail(f"{where}.title must be a non-empty string")
+            if task["type"] == "goal":
                 fail(
-                    f"goals[{goal_idx}].tasks[{task_idx}] must be an object, "
-                    f"got {type(task).__name__}"
+                    f"{where}.type is 'goal' — a goal's tasks must be 'work' or "
+                    f"'defect'; goals nest only one level deep"
+                )
+            if task["type"] not in TASK_TYPES:
+                fail(
+                    f"{where}.type must be 'work' or 'defect', "
+                    f"got {task['type']!r}"
                 )
             check_length(
                 f"goals[{goal_idx}].tasks[{task_idx}].title",

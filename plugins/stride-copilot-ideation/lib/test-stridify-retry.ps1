@@ -17,7 +17,7 @@ Write-Host ''
 
 # Mirror of the bash classify() function the skill body inlines. Inputs
 # are the subagent dispatch result string; outputs are one of:
-#   success | transient | terminal
+#   success | transient | unavailable | terminal
 function Classify-Result {
     param([string]$Result)
     if ([string]::IsNullOrEmpty($Result)) { return 'terminal' }
@@ -30,13 +30,21 @@ function Classify-Result {
             return 'terminal'
         }
     }
-    # transient: HTTP 529, network errors, "overloaded" string.
-    if ($Result -match '\b529\b' -or $Result -match '(?i)overloaded' -or
+    # unavailable: no custom-agent support, or the host does not know the
+    # agent. Never retried; the skill runs the agent file inline instead.
+    if ($Result -match '(?i)unknown (sub)?agent|no such agent|agent\b.*\bnot found|custom agents?\b.*\b(not supported|unavailable)') {
+        return 'unavailable'
+    }
+    # transient: a rate-limit or capacity error from any model provider
+    # (HTTP 429, 503, 529; rate limit / overloaded / capacity wording), or a
+    # network error.
+    if ($Result -match '\b(429|503|529)\b' -or $Result -match '(?i)too many requests|service unavailable' -or
+        $Result -match '(?i)rate[ _-]?limit' -or $Result -match '(?i)overloaded' -or $Result -match '(?i)capacity' -or
         $Result -match '(?i)connection refused' -or $Result -match '(?i)could not resolve' -or
         $Result -match '(?i)timeout' -or $Result -match '(?i)tls handshake') {
         return 'transient'
     }
-    # terminal: everything else (bad agent name, contract violation, hard 4xx).
+    # terminal: everything else (contract violation, hard 4xx other than 429).
     return 'terminal'
 }
 
@@ -56,14 +64,27 @@ if ((Classify-Result 'API is overloaded right now') -ceq 'transient') { Pass "ov
 
 # Stage 4: network errors (transient).
 if ((Classify-Result 'Connection refused on port 443') -ceq 'transient') { Pass "Connection refused -> transient" } else { Fail }
-if ((Classify-Result 'Could not resolve host api.anthropic.com') -ceq 'transient') { Pass "DNS failure -> transient" } else { Fail }
+if ((Classify-Result 'Could not resolve host api.example.com') -ceq 'transient') { Pass "DNS failure -> transient" } else { Fail }
 if ((Classify-Result 'Request timeout after 30s') -ceq 'transient') { Pass "timeout -> transient" } else { Fail }
 if ((Classify-Result 'TLS handshake error') -ceq 'transient') { Pass "TLS handshake -> transient" } else { Fail }
 
-# Stage 5: bad agent name (terminal).
-if ((Classify-Result 'agent type does-not-exist not found') -ceq 'terminal') { Pass "bad agent name -> terminal" } else { Fail }
+# Stage 4b: provider-neutral rate-limit and capacity errors (transient).
+foreach ($msg in @('HTTP 429 Too Many Requests', '503 Service Unavailable', 'Error: rate limit exceeded, retry after 20s',
+                   'rate_limit_error: request was throttled', 'The model is at capacity, please try again later')) {
+    if ((Classify-Result $msg) -ceq 'transient') { Pass "'$msg' -> transient" } else { Fail "'$msg' should be transient" }
+}
 
-# Stage 6: hard 4xx other than 529 (terminal).
+# Stage 5: an unknown agent or no custom-agent support (unavailable: run the
+# agent file inline, never retried).
+foreach ($msg in @('agent type does-not-exist not found', 'unknown subagent type: requirements-decomposer',
+                   'Custom agents are not supported in this environment')) {
+    if ((Classify-Result $msg) -ceq 'unavailable') { Pass "'$msg' -> unavailable" } else { Fail "'$msg' should be unavailable" }
+}
+
+# Stage 5b: a number that merely contains 429 is not a status code (terminal).
+if ((Classify-Result 'contract violation: response of 14290 tokens had no fenced JSON block') -ceq 'terminal') { Pass "14290 -> terminal" } else { Fail "14290 should be terminal" }
+
+# Stage 6: hard 4xx other than 429 (terminal).
 if ((Classify-Result 'HTTP 400: Bad Request') -ceq 'terminal') { Pass "HTTP 400 -> terminal" } else { Fail }
 if ((Classify-Result 'HTTP 401: Unauthorized') -ceq 'terminal') { Pass "HTTP 401 -> terminal" } else { Fail }
 

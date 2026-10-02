@@ -143,6 +143,16 @@ else
   printf 'FAIL  slug_from_path: malformed path leaked output: %s\n' "$BAD_OUT"
 fi
 
+# --- sourcing leaves the caller's shell options alone ----------------------
+# A skill fragment sources this helper into its own shell; a file-scope
+# `set -u` here would turn nounset on there, and an unset optional variable
+# such as CONTINUE_PATH would then abort the step.
+opts="$(bash -c '. "$1"; case $- in *u*) echo nounset-on;; *) echo nounset-off;; esac' _ "${SCRIPT_DIR}/filename.sh")"
+assert_eq "sourcing filename.sh leaves nounset off in the caller" "$opts" "nounset-off"
+out="$(bash -c '. "$1"; if [ -n "$CONTINUE_PATH" ]; then echo set; else echo unset; fi; sti_slugify "Hello World" >/dev/null && echo ok' _ "${SCRIPT_DIR}/filename.sh" 2>&1)"
+assert_eq "after sourcing filename.sh, an unset optional variable reads as empty" "$out" "unset
+ok"
+
 # --- summary ---------------------------------------------------------------
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

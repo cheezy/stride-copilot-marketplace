@@ -1,4 +1,4 @@
-# PowerShell mirror of test-validate-batch.sh — exercises validate_batch.py
+﻿# PowerShell mirror of test-validate-batch.sh — exercises validate_batch.py
 # against known-good and known-broken JSON inputs.
 
 Set-StrictMode -Version Latest
@@ -115,6 +115,38 @@ if ($r.rc -eq 0 -and [string]::IsNullOrEmpty($r.stderr) -and [string]::IsNullOrW
 } else {
     Fail "fully-populated task should be silent" ("rc={0} stderr={1} stdout={2}" -f $r.rc, $r.stderr, $r.stdout)
 }
+
+# Stage 12: (b) a stray root 'tasks' key alongside 'goals' is fatal.
+$strayTasks = '{"goals": [{"title": "G", "type": "goal", "tasks": [{"title": "T", "type": "work"}]}], "tasks": [{"title": "Stray", "type": "work"}]}'
+$r = Invoke-Validator $strayTasks
+if ($r.rc -ne 0 -and $r.stderr.Contains("root has a stray 'tasks' key alongside 'goals'")) {
+    Pass "(b) a stray root 'tasks' key alongside 'goals' fails"
+} else {
+    Fail "(b) stray root 'tasks' key not detected" $r.stderr
+}
+
+# Stage 13: (d) task level — each task is an object with a non-empty string
+# title and a type of 'work' or 'defect'. The failing task is the second one,
+# so the message must name its own index.
+$taskCases = @(
+    @{ Task = '{"type": "work"}';                Label = '(d) task without title — names the task path';               Want = "goals[0].tasks[1] is missing required field 'title'" },
+    @{ Task = '{"title": "", "type": "work"}';   Label = '(d) task with an empty title fails';                         Want = 'goals[0].tasks[1].title must be a non-empty string' },
+    @{ Task = '{"title": "   ", "type": "defect"}'; Label = '(d) task with a whitespace-only title fails';             Want = 'goals[0].tasks[1].title must be a non-empty string' },
+    @{ Task = '{"title": 7, "type": "work"}';    Label = '(d) task with a non-string title fails';                     Want = 'goals[0].tasks[1].title must be a non-empty string' },
+    @{ Task = '{"title": "T"}';                  Label = '(d) task without type — names the task path';                Want = "goals[0].tasks[1] is missing required field 'type'" },
+    @{ Task = '{"title": "T", "type": "goal"}';  Label = "(d) task of type 'goal' fails — goals nest one level deep"; Want = "goals[0].tasks[1].type is 'goal'" },
+    @{ Task = '{"title": "T", "type": "feature"}'; Label = '(d) task of any other type fails';                         Want = "goals[0].tasks[1].type must be 'work' or 'defect', got 'feature'" },
+    @{ Task = '"just a title"';                  Label = '(d) a task that is a string instead of an object fails';     Want = 'goals[0].tasks[1] must be an object, got str' }
+)
+foreach ($c in $taskCases) {
+    $doc = '{"goals": [{"title": "G", "type": "goal", "tasks": [{"title": "First", "type": "work"}, ' + $c.Task + ']}]}'
+    $r = Invoke-Validator $doc
+    if ($r.rc -ne 0 -and $r.stderr -and $r.stderr.Contains($c.Want)) { Pass $c.Label } else { Fail $c.Label ("rc={0} stderr={1}" -f $r.rc, $r.stderr) }
+}
+
+$workAndDefect = '{"goals": [{"title": "G", "type": "goal", "tasks": [{"title": "Work item", "type": "work"}, {"title": "Bug fix", "type": "defect", "dependencies": [0]}]}]}'
+$r = Invoke-Validator $workAndDefect
+if ($r.rc -eq 0 -and [string]::IsNullOrEmpty($r.stderr)) { Pass "(d) tasks of type 'work' and 'defect' both pass" } else { Fail "(d) a work/defect batch was rejected" $r.stderr }
 
 Write-Host ''
 Write-Host ("{0} passed, {1} failed" -f $script:PASS, $script:FAIL)

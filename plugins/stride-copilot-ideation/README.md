@@ -12,7 +12,8 @@ The two skills:
 stride-ideation-ideate [<topic>] [--continue <path>] [--input <path>] [--profile <name>]
   Interactive ideation session. Drives a Q&A loop with you to produce a
   timestamped requirements markdown doc. Stop here if you only want a spec.
-  --continue refines a prior committed requirements doc; --input seeds draft
+  --continue refines a prior committed requirements doc (also
+  --continue=<path>); --input seeds draft
   sections from a freeform brain-dump file (read-only). When --profile is
   omitted, the session recommends one before the rounds. See "Session
   experience" below.
@@ -26,13 +27,30 @@ stride-ideation-stridify <path-to-requirements.md> [--goal <name|index>] [--yes]
   --goal scopes the dispatch to one surface from the doc's
   ## Decomposition seams section (see the upstream "Resilience model" below).
   --yes / --auto-approve bypasses the approval gate for scripted callers.
+
+stride-ideation-stridify --batch <path-to-stride-batch.json> [--yes]
+  Ships a batch JSON that is already on disk — one you declined at the
+  approval gate, one a failed POST left behind, or one saved from a
+  retry-exhaustion recovery — without decomposing again: validates it,
+  refuses it if it contains your API token, shows the same preview and
+  approval gate, then POSTs it through lib/ship.sh (lib/ship.ps1 on
+  Windows). Nothing is stamped, rewritten or committed. Cannot be combined
+  with --goal. Shipping a batch that was already shipped creates every goal
+  and task again.
 ```
 
 The first skill is hard-gated on seven required sections (Goal, Problem, Outcome, Assumptions, Constraints, Non-goals, Success metrics) plus shape requirements on Assumptions (ranked, riskiest marked, premortem-derived) and Success metrics (both leading and lagging indicators). The second skill is gated on a passing structural validation of the decomposer's output before it commits or POSTs anything.
 
 ## Installation
 
-Install via the Copilot CLI plugin command:
+**From the Stride Copilot marketplace** (recommended):
+
+```bash
+copilot plugin marketplace add cheezy/stride-copilot-marketplace
+copilot plugin install stride-copilot-ideation
+```
+
+**Or directly from GitHub:**
 
 ```bash
 copilot plugin install https://github.com/cheezy/stride-copilot-ideation
@@ -109,7 +127,7 @@ Each `--goal` run produces a sibling batch JSON named `<source-slug>-<goal-slug>
 
 ## Preview-and-approval gate on `stride-ideation-stridify` (v0.2.0+)
 
-Before POSTing the generated batch to your Stride instance, the skill renders the decomposed goal/task tree (each goal title, its task count and titles, and the cross-goal claim order from `decomposition_notes`) and requires your explicit approval. The batch JSON is written and committed to disk *before* the gate, so on decline the skill stops cleanly (exit 0) with the audited artifact intact and no POST. Pass `--yes` / `--auto-approve` (explicit only, never inferred) to bypass the gate for scripted callers. The preview reads only the on-disk JSON and never prints the API token.
+Before POSTing the generated batch to your Stride instance, the skill renders the decomposed goal/task tree (each goal title, its task count and titles, and the cross-goal claim order from `decomposition_notes`) and requires your explicit approval. The batch JSON is written and committed to disk *before* the gate, so on decline the skill stops cleanly (exit 0) with the audited artifact intact and no POST; activate the skill with `--batch <path>` to ship that same file later without decomposing again. Pass `--yes` / `--auto-approve` (explicit only, never inferred) to bypass the gate for scripted callers. The preview reads only the on-disk JSON and never prints the API token.
 
 ## How this plugin relates to `stride-copilot`
 
@@ -118,11 +136,12 @@ Before POSTing the generated batch to your Stride instance, the skill renders th
 - **`stride-copilot`** handles the **task lifecycle** — claiming a task from a backlog, decomposing goals, executing the four-stage hook workflow (`before_doing` / `after_doing` / `before_review` / `after_review` / `after_goal`), and completing tasks back to the Stride API.
 - **`stride-copilot-ideation`** (this plugin) handles **ideation** — turning a fuzzy idea into a requirements doc, decomposing that doc into a Stride batch, and seeding the Stride backlog.
 
-A typical full-loop usage installs both:
+A typical full-loop usage installs both, from the same marketplace:
 
 ```bash
-copilot plugin install https://github.com/cheezy/stride-copilot
-copilot plugin install https://github.com/cheezy/stride-copilot-ideation
+copilot plugin marketplace add cheezy/stride-copilot-marketplace
+copilot plugin install stride-copilot
+copilot plugin install stride-copilot-ideation
 ```
 
 Then: activate `stride-ideation-ideate` to scope the work, activate `stride-ideation-stridify` to seed the backlog, then activate `stride-workflow` (from stride-copilot) to claim and ship the resulting tasks.

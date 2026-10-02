@@ -141,6 +141,14 @@ assert_fails_with "(b) wrong root key 'batch' — named in error" \
   "$TMP/wrong_root_batch.json" \
   "missing the required 'goals' array"
 
+cat > "$TMP/root_goals_and_tasks.json" <<'EOF'
+{"goals": [{"title": "G", "type": "goal", "tasks": [{"title": "T", "type": "work"}]}],
+ "tasks": [{"title": "Stray", "type": "work"}]}
+EOF
+assert_fails_with "(b) a stray root 'tasks' key alongside 'goals' fails" \
+  "$TMP/root_goals_and_tasks.json" \
+  "root has a stray 'tasks' key alongside 'goals'"
+
 # --- (c) empty_goals -------------------------------------------------------
 
 cat > "$TMP/empty_goals.json" <<'EOF'
@@ -179,6 +187,47 @@ EOF
 assert_fails_with "(d) goal with empty tasks array fails" \
   "$TMP/empty_tasks.json" \
   "goals[0].tasks is empty"
+
+# Task level: each task is an object with a non-empty string title and a
+# type of 'work' or 'defect'. The failing task is the second one, so the
+# message must name its own index.
+task_case() {  # task_case <name> <second-task JSON> <label> <expected substring>
+  printf '{"goals": [{"title": "G", "type": "goal", "tasks": [{"title": "First", "type": "work"}, %s]}]}\n' \
+    "$2" > "$TMP/task_$1.json"
+  assert_fails_with "$3" "$TMP/task_$1.json" "$4"
+}
+task_case no_title '{"type": "work"}' \
+  "(d) task without title — names the task path" \
+  "goals[0].tasks[1] is missing required field 'title'"
+task_case empty_title '{"title": "", "type": "work"}' \
+  "(d) task with an empty title fails" \
+  "goals[0].tasks[1].title must be a non-empty string"
+task_case blank_title '{"title": "   ", "type": "defect"}' \
+  "(d) task with a whitespace-only title fails" \
+  "goals[0].tasks[1].title must be a non-empty string"
+task_case number_title '{"title": 7, "type": "work"}' \
+  "(d) task with a non-string title fails" \
+  "goals[0].tasks[1].title must be a non-empty string"
+task_case no_type '{"title": "T"}' \
+  "(d) task without type — names the task path" \
+  "goals[0].tasks[1] is missing required field 'type'"
+task_case goal_type '{"title": "T", "type": "goal"}' \
+  "(d) task of type 'goal' fails — goals nest one level deep" \
+  "goals[0].tasks[1].type is 'goal'"
+task_case other_type '{"title": "T", "type": "feature"}' \
+  "(d) task of any other type fails" \
+  "goals[0].tasks[1].type must be 'work' or 'defect', got 'feature'"
+task_case string_task '"just a title"' \
+  "(d) a task that is a string instead of an object fails" \
+  "goals[0].tasks[1] must be an object, got str"
+
+cat > "$TMP/task_defect_ok.json" <<'EOF'
+{"goals": [{"title": "G", "type": "goal", "tasks": [
+  {"title": "Work item", "type": "work"},
+  {"title": "Bug fix", "type": "defect", "dependencies": [0]}
+]}]}
+EOF
+assert_ok "(d) tasks of type 'work' and 'defect' both pass" "$TMP/task_defect_ok.json"
 
 # --- (e) bad_dependency_index ---------------------------------------------
 

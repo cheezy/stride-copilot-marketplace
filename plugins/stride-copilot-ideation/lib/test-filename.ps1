@@ -76,5 +76,20 @@ if ([string]::IsNullOrEmpty($badPath)) { Pass "slug_from_path rejects non-family
 # --- summary ---------------------------------------------------------------
 
 Write-Host ''
+# --- dot-sourcing leaves the caller's strict mode alone -----------------------
+# A skill step dot-sources this helper into its own session; a file-scope
+# Set-StrictMode here would leak into it, and reading an unset optional
+# variable such as $CONTINUE_PATH would then throw.
+$probe = @'
+Set-StrictMode -Off
+. '__HELPER__'
+try { $null = $CONTINUE_PATH; 'strict-off' } catch { 'strict-on' }
+if (Sti-Slugify 'Hello World') { 'ok' }
+'@
+$probe = $probe.Replace('__HELPER__', (Join-Path $ScriptDir 'filename.ps1'))
+$pwshExe = (Get-Process -Id $PID).Path
+$probeOut = (& $pwshExe -NoProfile -NonInteractive -Command $probe) -join ','
+Assert-Equal "dot-sourcing filename.ps1 leaves strict mode off in the caller, and its functions still work" "strict-off,ok" $probeOut
+
 Write-Host ("{0} passed, {1} failed" -f $script:PASS, $script:FAIL)
 if ($script:FAIL -gt 0) { exit 1 } else { exit 0 }

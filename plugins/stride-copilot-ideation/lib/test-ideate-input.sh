@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for the stride-ideation-ideate --input <file> brain-dump seed
-# documented in skills/stride-ideation-ideate/SKILL.md (W1144). The platform
+# Tests for the stride-ideation-ideate --input <file> brain-dump seed (W1144)
+# and the --continue <path> / --continue=<path> parse (W2194) documented in
+# skills/stride-ideation-ideate/SKILL.md. The platform
 # file-read / question UI is only available inside a live Copilot CLI session,
 # so this test embeds reference shell implementations of the documented Step 1
 # --input parse, the file-exists validation, and the Step 4c read-only
@@ -44,12 +45,14 @@ fail() {
 #
 # Mirrors SKILL.md Step 1: parse --continue and --input (each in both
 # `--flag <value>` and `--flag=<value>` forms), consuming their tokens;
-# everything left over is the TOPIC remainder. Prints three lines:
-#   line 1 = CONTINUE_PATH, line 2 = INPUT_PATH, line 3 = trimmed remainder.
+# everything left over is the TOPIC remainder. Prints four lines:
+#   line 1 = CONTINUE_PATH, line 2 = INPUT_PATH, line 3 = trimmed remainder,
+#   line 4 = error (continue-missing when --continue has no value: bare and
+#            trailing, `--continue=`, or followed by another flag).
 
 parse_flags() {
   local args="$1"
-  local continue_path="" input_path="" out=""
+  local continue_path="" input_path="" out="" err=""
   # shellcheck disable=SC2206
   local toks=( $args )
   local n=${#toks[@]} i=0
@@ -57,11 +60,15 @@ parse_flags() {
     local t="${toks[$i]}"
     case "$t" in
       --continue)
-        i=$(( i + 1 ))
-        if [ "$i" -lt "$n" ]; then continue_path="${toks[$i]}"; fi
+        if [ $(( i + 1 )) -lt "$n" ] && [ "${toks[$(( i + 1 ))]#--}" = "${toks[$(( i + 1 ))]}" ]; then
+          i=$(( i + 1 )); continue_path="${toks[$i]}"
+        else
+          err=continue-missing
+        fi
         ;;
       --continue=*)
         continue_path="${t#--continue=}"
+        [ -n "$continue_path" ] || err=continue-missing
         ;;
       --input)
         i=$(( i + 1 ))
@@ -76,7 +83,7 @@ parse_flags() {
     esac
     i=$(( i + 1 ))
   done
-  printf '%s\n%s\n%s\n' "$continue_path" "$input_path" "$out"
+  printf '%s\n%s\n%s\n%s\n' "$continue_path" "$input_path" "$out" "$err"
 }
 
 # --- reference --input validation ------------------------------------------
@@ -233,6 +240,36 @@ if validate_input_path "$EMPTY_NOTES" 2>/dev/null; then
   fi
 else
   fail "case 7: empty --input file was rejected by validation"
+fi
+
+# === case 8: --continue accepts both shapes, split on the first = only ======
+
+expect_continue() {  # expect_continue <label> <args> <want-path> <want-err>
+  local p got_path got_err
+  p="$(parse_flags "$2")"
+  got_path="$(printf '%s\n' "$p" | sed -n 1p)"
+  got_err="$(printf '%s\n' "$p" | sed -n 4p)"
+  if [ "$got_path" = "$3" ] && [ "$got_err" = "$4" ]; then pass "$1"; else fail "$1" "path=[$got_path] err=[$got_err]"; fi
+}
+expect_continue "case 8a: --continue <path> sets CONTINUE_PATH" "--continue $PRIOR" "$PRIOR" ""
+expect_continue "case 8b: --continue=<path> sets CONTINUE_PATH" "--continue=$PRIOR" "$PRIOR" ""
+expect_continue "case 8c: --continue=<path> keeps an = inside the path" "--continue=docs/a=b-requirements.md" "docs/a=b-requirements.md" ""
+expect_continue "case 8d: --continue= with an empty value is an error" "--continue= topic" "" "continue-missing"
+expect_continue "case 8e: a bare trailing --continue is an error" "topic --continue" "" "continue-missing"
+expect_continue "case 8f: --continue followed by a flag never takes the flag as its path" "--continue --input $NOTES" "" "continue-missing"
+p8="$(parse_flags "--continue=$PRIOR --input=$NOTES")"
+if [ "$(printf '%s\n' "$p8" | sed -n 2p)" = "$NOTES" ]; then
+  pass "case 8g: --continue=<path> and --input=<path> parse together"
+else
+  fail "case 8g: combined = forms" "$p8"
+fi
+
+SKILL_MD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/stride-ideation-ideate/SKILL.md"
+if grep -qF 'for the `--continue=<path>` form' "$SKILL_MD" \
+   && grep -qF 'stride-ideation: --continue requires a path to a prior -requirements.md doc' "$SKILL_MD"; then
+  pass "case 8h: SKILL.md Step 1 documents --continue=<path> and the missing-value error"
+else
+  fail "case 8h: SKILL.md Step 1 is missing a --continue rule this test mirrors"
 fi
 
 # === summary ==============================================================
