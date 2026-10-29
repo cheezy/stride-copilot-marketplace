@@ -2,6 +2,558 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [2.43.0] - 2026-10-29
+
+This release carries two stride batches into this plugin at once. The first
+is G446–G448, in eight port commits (W2537–W2544). The second is G455's
+rework gates, in seven port commits (W2546–W2552), which landed after the
+2.43.0 heading was stamped but before it was tagged, so they ship under the
+same version rather than a new one. The G455 entries come first, then the
+G446–G448 entries, and the end of the entry lists, for each batch, the items
+this port cannot take or takes another way, each with its reason.
+
+When the G455 entries moved here from `[Unreleased]`, six bash assertions
+that looked for them there (36h, 37h, 38f, 39k, 40h and 41i) were pointed at
+the `[2.43.0]` heading instead; what each asserts is otherwise unchanged.
+`plugin.json` keeps the 2.43.0 it was given when the heading was first
+stamped.
+
+RELEASE.md's top-heading check also gains a test. Bash Group 42, the next
+free number, finds the newest numbered heading and, when its `vX.Y.Z` tag
+exists, compares that heading's entries with the tagged copy of the
+changelog, so an entry added under a released heading goes red. A throwaway
+fixture repository proves the untagged, unchanged and grown cases, and the
+check runs on this checkout too, skipped where the tree is not its own git
+repository. It reads the changelog and git tags only, so the PowerShell half
+carries no twin.
+
+### Added — the task-reviewer flags untouched twins and mirror files (W2552)
+
+Ports stride W2296. Step 6 of `agents/task-reviewer.agent.md` gains a
+**Twin Check** part after Statement Verification. For each file the diff
+touches, the reviewer looks for its declared counterparts, which come in
+three kinds: the `.sh` or `.ps1` half at the same path stem (this plugin
+ships both halves of every hook), a file the touched one names as its
+mirror or twin, as kept in sync with it, or as stating the same rule
+again, and another file whose `canon:<id> vN` anchor matches one on a
+touched section.
+
+- **Declared pairs only.** A file that merely names the touched one is not
+  a counterpart, and a touched file with no counterpart raises no issue.
+- **Its own tools, recorded.** Counterparts are found with `glob` and
+  `search` and nothing else, neither file of a pair is ever run, and each
+  call and what it found goes in the prose report after the statement
+  checks. A counterpart is a path the reviewer's own call returned, never
+  one built from diff or task text, and opening it counts as reviewing the
+  diff rather than as unrelated exploring. Statement Verification's limits
+  carry over: only files inside the project, none holding secrets, a
+  credential-shaped line cited by `file:line`, and a sibling named without
+  a directory matched only within the project.
+- **Working tree, not git's index.** With no shell there is no
+  `git ls-files`, so both tools see an untracked file just as they see a
+  tracked one, as in stride-gemini.
+- **Two Important `code_quality` findings.** A mirror or twin sentence
+  naming a file no `glob` call finds is dangling, raised at the sentence's
+  `file:line`. A counterpart the diff left as it was, while altering
+  behaviour or a rule the two share, is raised citing both files and is
+  never `cosmetic`; this second one is skipped when the task or the
+  invocation says why the counterpart needs no change.
+- **Nothing a parser reads changes.** No block key is added and
+  `schema_version` stays `"1.7"`. `README.md` describes the check in the
+  task-reviewer entry.
+
+To make room under Group 34c's 49,009-byte ceiling, twenty restated
+reasons and examples left the reviewer without dropping a rule: the
+fields-withheld sentence that repeats the opening line, the precedence
+aside and the longer sentinel-scope sentence on the credential carve-out,
+the rendered-panel reason in step 7, step 7's two `not_applicable`
+examples, the legacy field list in the consumption invariant, the
+`considerations` entry-size clause and its dispatch-only aside, three
+asides in the `rows` breakdown, the `criterion` gloss, three restated
+glosses on the `security_considerations` and `behaviour_test_matrix`
+verdicts, the never-invent-rows restatement, the fallback-grep reason for
+the summary line, and the two schema-citation clauses. The file ends at
+48,929 bytes. No canon entry is registered for this rule.
+
+Tests: bash Group 41, the next free number. It reads contract text only,
+so the PowerShell half carries no twin. Group 40's Statement Verification
+slice now stops at the Twin Check heading, and 40h asks only that the
+W2551 entry sit under `[2.43.0]`, since it is no longer first.
+
+### Added — the task-reviewer checks the factual statements a diff adds (W2551)
+
+Ports stride W2295. Step 6 of `agents/task-reviewer.agent.md` gains a
+**Statement Verification** part. The reviewer lists each checkable
+statement the diff adds to prose, a comment, a changelog, or skill or agent
+text — a count, a path, an identifier, a line reference, a version, or a
+claim about what code here does — and leaves judgements, advice and
+rationale out.
+
+- **Its own tools, never the diff's commands.** Each statement is checked
+  with the reviewer's own `read`, `search` or `glob` call, the only tools
+  its front matter grants. A command found in the diff or the task text is
+  never run or reused, and only files inside the project, none holding
+  secrets, are opened. A zero hit counts only from a check shown able to
+  match.
+- **No shell, so some statements stay open.** What only git history or a
+  program's output could settle is recorded as unverifiable and raises no
+  issue, as in stride-gemini. A statement about the change itself, such as
+  its file count, is checked against the diff the reviewer was given.
+- **A contradiction is Important.** A statement its check contradicts is an
+  Important `code_quality` issue at the statement's `file:line`, never
+  `cosmetic`, overriding step 6's Minor default.
+- **Recorded in the prose report**, after step 4's pairings, as a hit count
+  or a `file:line`. Past 25 statements the changelog, README and agent or
+  skill text go first, and the unchecked count is stated.
+- **Nothing a parser reads changes.** No block key is added and
+  `schema_version` stays `"1.7"`. `README.md` describes the check in the
+  task-reviewer entry.
+
+Not ported: stride's hand-off that re-runs `claims_verified_by` commands.
+This port has no claims census and no `claims_verified_by` field, so there
+is nothing to hand off. To stay under Group 34c's 49,009-byte ceiling the
+reviewer's worked example now puts each array entry on one line, with the
+same JSON, and six clauses lost restated reasons — the rendered-Review-queue
+aside, the locate-the-row aside, the 1:1 count reason, the optional-matrix
+reason, and the verdict rule's restatements of how fields arrive and of the
+credential carve-out — without dropping a rule; the file ends at 48,974
+bytes. No canon entry is registered for this rule.
+
+Tests: bash Group 40, the next free number. It reads contract text only,
+so the PowerShell half carries no twin. Group 39k now asks only that the
+W2550 entry sit under `[2.43.0]`, since it is no longer first.
+
+### Added — break-it evidence for new and changed tests (W2550)
+
+Ports stride W2294. A test that stays green while the code it guards is
+broken proves nothing, and only the implementer can show otherwise: the
+`task-reviewer` custom agent holds read, search and glob and never runs a
+test.
+
+- **The procedure.** The new `skills/stride-workflow/test-non-vacuity.md`,
+  reached from one Step 4 bullet, has the implementer break each test the
+  diff adds or changes, watch it fail, undo the edit by hand and watch it
+  pass. A diff with no new or changed test, or one that only reformats a
+  test, owes nothing.
+- **The restore is proved, not trusted.** The tree is hashed before the
+  first break and again after the last, over status, the diffs and the
+  untracked files' contents, because status alone cannot see a break left
+  in a file that was already modified. The hashes must match before the
+  reviewer is invoked, and no restore may use `git checkout`, `restore`,
+  `stash` or `reset`.
+- **Text pins are counted by occurrence.** `grep -oF … | wc -l` rather than
+  `grep -c`, so a phrase that appears twice on one line is caught before a
+  one-site break leaves its test green.
+- **Unbreakable tests say why.** A test whose break would reach outside the
+  repository gets a one-line `not_broken_reason`; "slow" or "obvious" does
+  not qualify.
+- **The hand-off.** `stride-subagent-workflow` Phase 3 sends the results as
+  `break_it` — `test`, `break`, `failed_when_broken`,
+  `passes_when_restored` — beside `review_round` and never inside its
+  `fixes[]`. This port has no `commit_pending`, so `break_it` is declared
+  as its own optional orchestrator-asserted input in the reviewer.
+- **The enforcement.** A new **Break-it Evidence** part of reviewer step 4
+  raises an Important `testing` issue for a missing entry, a break that
+  misses the asserted behaviour, booleans that are not both `true`, or an
+  empty `not_broken_reason`, and wants fresh entries for tests a later
+  round's fixes touched. The Step 5 self-review checklist gains a matching
+  box, and `README.md` describes both halves.
+- **Nothing a parser reads changes.** No block key is added and
+  `schema_version` stays `"1.7"`.
+
+The procedure is a sibling file because the whole of `skills/` ships with
+the plugin and inlining it would breach Group 33c's ceiling on the workflow
+skill; whether Copilot CLI opens the sibling on its own has not been
+observed, which is why Step 4 names it by file. The enforcement part sits
+after the matrix part of step 4 rather than among its bullets, so Group 38
+is unchanged. To stay under Group 34c's 49,009-byte ceiling the reviewer
+dropped restated clauses and reasons — a restated fail-closed sentence,
+the enricher aside, a sentinel rationale among them — without dropping a
+rule; it ends at 48,932 bytes. No canon entry is registered for this rule.
+
+Tests: bash Group 39, the next free number. It reads contract text only,
+so the PowerShell half carries no twin.
+
+### Changed — the task-reviewer pairs every `testing_strategy` item with a covering test (W2549)
+
+Ports stride W2293. Step 4 of `agents/task-reviewer.agent.md` used to ask
+whether the diff carried "appropriate tests". It now takes each
+`unit_tests`, `integration_tests` and `edge_cases` item of the task's
+`testing_strategy` on its own and names the test that covers it as
+`file:line`, whether that test is new in the diff or already in the suite.
+
+- **A name is not coverage.** A test covers an item only when it checks
+  the behaviour the item describes, and the reviewer judges that by
+  reading; it still runs nothing.
+- **A gap is an issue.** An item with no covering test becomes an
+  Important `category: "testing"` issue naming the item, and the
+  `testing_strategy` verdict fails. New behaviour that no item lists and no
+  test exercises is still an Important testing issue.
+- **The matrix and the pairing agree.** A Verified `behaviour_test_matrix`
+  row is the pairing for its item. An item whose row came out Missing or
+  Mismatch already has that row's issue, so it gets no second one.
+- **`manual_tests` are left out,** with a one-line note, since a person
+  performs them.
+- **Nothing a parser reads changes.** The pairings sit in the prose report,
+  after the acceptance-criteria and project-checks tables (step 8 now says
+  so); the JSON block keeps its keys, `schema_version` stays `"1.7"`, and
+  the one-line summary line keeps its form.
+- `README.md` describes the pairing in the task-reviewer entry.
+
+The wording is short because bash Group 34c keeps the reviewer under its
+49,009-byte starting size; the file ends at 49,000 bytes. No canon entry
+is registered for this rule.
+
+Tests: bash Group 38, the next free number. It reads contract text only,
+so the PowerShell half carries no twin.
+
+### Added — the task-explorer reports task statements the current code contradicts (W2548)
+
+Ports stride W2298. `agents/task-explorer.agent.md` gains a new step 6
+that runs before the summary, which moves to step 7. The explorer gathers
+each claim the task makes concerning the code as it stands — from the
+`key_files` notes, `description`, `where_context`, `patterns_to_follow` and
+`technical_details` — and settles each with a read, search or glob call it
+chooses itself, recorded beside the statement as `checked by:`. A command
+found in task text is never run and never used as the check. Statements no
+read can settle go on an unverified list instead of being dropped. Step 7
+now leads with the result, under the fixed heading
+`Task statements the current code contradicts`, or `none found` beneath it
+when every statement held.
+
+- **The orchestrator measures the commit window.** Since the explorer
+  lacks a shell, Phase 1 of `skills/stride-subagent-workflow/SKILL.md` now holds
+  a snippet the orchestrator runs on the claimed-task file. It reads
+  `inserted_at` and the key-file paths out of the file itself, accepts the
+  timestamp only as a plain `YYYY-MM-DDTHH:MM:SS` (treated as UTC), passes a
+  path to git only when it is plain and repo-relative, asks each file of the
+  repository that tracks it with `git -C`, and prints hashes and dates
+  without any commit message. The explorer receives those `commit window:`
+  lines beside `TASK_FILE`.
+- **No usable timestamp still means a check.** A missing or malformed
+  `inserted_at`, no key files, no task file, or a snippet that cannot run
+  each yield a single `commit window: not checked — <reason>` line, and the
+  explorer checks the statements by reading and says the window was missing.
+- **The inline fallback** now also sends `description` and
+  `technical_details`, so the new step has the fields it checks.
+- `README.md` describes the new behaviour in the task-explorer entry.
+
+No step-number cross-reference to the explorer existed elsewhere in this
+port, so the renumbering is confined to the agent file. No canon entry is
+registered for this rule.
+
+Tests: bash Group 37, the next free number. It reads contract text and runs
+the Phase 1 snippet against throwaway repositories under bash, so the
+PowerShell half carries no twin.
+
+### Added — the enricher and decomposer check a task's fields against one another (W2547)
+
+Ports stride W2297. The 18-item checklist in `agents/task-enricher.agent.md`
+is unchanged; after it comes a new cross-field consistency pass, and
+`agents/task-decomposer.agent.md` closes with a new Step 7 that applies the
+same pass to each child. Where the checklist looks at one field at a time,
+the pass looks for disagreements between fields, in six checks:
+
+- **Verification scope** — a step narrower than the criterion it proves is
+  widened to match, or the mismatch is noted as an open question.
+- **No contradiction** — `what` and `patterns_to_follow` are set against the
+  pitfalls and security considerations, and the agent fixes the side it
+  authored.
+- **Prescribed patterns tested** — a regex or command the task tells the
+  implementer to use is judged, by reading alone, against the edge cases the
+  task lists. Both agents hold only the read, search and glob tools, and the
+  prompt forbids running the command or anything else with a side effect.
+- **Precedence stated** — instructions that could pull opposite ways name a
+  winner; dropping one side is never the fix.
+- **One line per criterion** — `agents/task-reviewer.agent.md` grades each
+  line of `acceptance_criteria` as its own requirement, so a wrapped
+  criterion is rejoined or split into two whole ones.
+- **External contracts named** — outside rules the change must honour are
+  listed with a `file:line` citation, and no secret, token or internal host
+  name is copied in.
+
+Nothing the pass cannot decide stops either agent. The enricher writes each
+such doubt as one sentence in `technical_details.open_questions`, and its
+Phase-2-only rule for `technical_details` and its output notes now say that
+key is exempt; the decomposer puts a sentence that opens with
+`Open question:` into that child's `description`. The human's own `title`,
+`type` and `description` stay exactly as written. A one-line pointer to the
+pass, for tasks written without the custom agents, lands in
+`skills/stride-creating-tasks/SKILL.md`,
+`skills/stride-creating-goals/SKILL.md` and
+`skills/stride-enriching-tasks/SKILL.md`. No canon entry is registered for
+this rule.
+
+Tests: bash Group 36, the next free number. It reads contract text only, so
+the PowerShell half carries no twin.
+
+### Changed — a `behaviour_test_matrix` by default when tasks are written (W2546)
+
+Ports stride W2292. `skills/stride-creating-tasks/SKILL.md`,
+`skills/stride-creating-goals/SKILL.md` (for every nested task) and
+`agents/task-decomposer.agent.md` (for every child) now author a
+seven-category `behaviour_test_matrix` as soon as a task's `testing_strategy`
+lists any unit or integration test. That is the default
+`agents/task-enricher.agent.md` already followed; until now the creating-tasks
+skill called the matrix optional and the decomposer never mentioned it.
+
+- Each of the three sites states the same rules: waive a category the change
+  does not touch rather than drop the field; a manual-only strategy gets
+  `"manual"` rows when its checks exercise behaviour; a task with no testable
+  behaviour leaves the matrix out and says why in one sentence of its
+  `description`; every row's `test_name` is a `testing_strategy` entry, and
+  the matrix never replaces `testing_strategy`; row text carries no secrets.
+- The decomposer also says a credential-shaped string seen in a project file
+  never goes into a row, shows a matrix in its Step 6 template (marked as one
+  row, which the API would reject as partial), and notes that its worked
+  example omits matrices for length.
+- The server rule is restated unchanged: an absent or empty matrix is valid
+  and never an empty pill, and a partial one is rejected with a 422.
+- The creating-tasks Complete Task Object now lists in `testing_strategy`
+  the exact test names its matrix rows use, so the example obeys the new
+  `test_name` rule.
+- The enricher is untouched, and no canon anchor is added.
+
+Tests: bash Group 35, the next free number. It reads contract text only, so
+the PowerShell half carries no twin.
+
+### Changed — rationale leaves the completion skill and the reviewer prompt for `docs/` (W2544)
+
+`skills/stride-completing-tasks/SKILL.md` is read before every completion and
+`agents/task-reviewer.agent.md` on every review dispatch, so paragraphs that
+argue for a rule or recount where it came from now sit in two new files:
+`docs/completion-rationale.md` (six sections) and
+`docs/task-reviewer-rationale.md` (four). A one-sentence pointer naming the file
+and section stays at each site. Three duplicates were dropped instead of moved,
+each pointing at the copy that survives: the D188 persistence caveat on the
+matrix bullet of the pre-submission self-check (its preamble keeps it), the
+"not faster" sentence under the verification checklist (the Automation Notice
+keeps it) and the explanation of why the completion curl tees its response
+(already covered in `docs/orchestrator-rationale.md`).
+
+- Still inline in the skill: the completion field table, the dispatched and
+  skip shapes with their reason enum, every self-check bullet, the severity
+  mapping and its fallback, and the redaction rules. Still inline in the
+  reviewer: the block schema, the verdict, verdict-note and
+  consistency rules, the summary line, the untrusted-data framing and the
+  redaction rules. The reviewer's schema-version note also
+  stays, because Group 24 pins it.
+- The `stdout-preservation-guard`, `cosmetic-finding-class` and `verdict-note`
+  blocks are byte-identical, and no canon version changed.
+- The skill went from 82,100 to 79,037 bytes and the reviewer from 49,009 to
+  48,364. The task quoted 81,436 and 47,773, sizes measured before W2538 and
+  W2540 grew both files.
+- `docs/` is not registered in `plugin.json`, so Copilot CLI loads nothing from
+  it, and a dispatched reviewer never opens the reviewer page.
+
+Tests: bash Group 34 (34i pins the three anchored spans byte for byte). It
+reads contract text only, so there is no PowerShell twin. Port of the method of
+stride W2258.
+
+### Changed — background and history leave the workflow skill for `docs/orchestrator-rationale.md` (W2543)
+
+Copilot CLI reads `skills/stride-workflow/SKILL.md` in full on every task, so
+ten passages that explain or record history rather than direct the work now
+live in the new `docs/orchestrator-rationale.md`, one `##` section each. Every
+site they left keeps a single-sentence pointer naming that file and section.
+Four duplicates were removed rather than moved, each with a pointer to where
+its twin stays: the "why this matters" paragraph under the result rollout
+(condensed to its one rule), the hook-failure and goal-task Edge Cases, and the
+Step 8 back-compat bullet calling `## after_goal` general-purpose (Step 6,
+Canonical Hook Examples, keeps it).
+
+- Gates, the decision matrix, every Decision Summary, schemas, self-checks,
+  executed code blocks, prompt-injection framing and redaction rules all stay in
+  the skill. The `review-round-cap`, `dispatch-count-telemetry` and
+  `reason-code-vocabulary` anchors still sit on top of their governed text, each
+  with its back-reference paragraph, and no canon version changed.
+- The skill went from 149,332 to 145,000 bytes (-2.9%). The task was filed
+  against 137,687 bytes, a size measured before W2538 to W2542 grew the file;
+  reaching it would mean moving rules, so it was not met.
+- `docs/` is not registered in `plugin.json`, so Copilot CLI loads nothing from
+  it.
+
+Tests: bash Group 33 (33i pins the three anchored spans byte for byte). It
+reads contract text only, so there is no PowerShell twin. Port of the method of
+stride W2257.
+
+### Changed — discovery asks for the slim task summary, and the enrichment check reads the full body (W2542)
+
+Port of stride W2256. `skills/stride-workflow/SKILL.md` Step 1 now calls
+`GET /api/tasks/next?response_view=slim`, which answers with a short summary
+instead of the task; a server that predates the parameter ignores it and sends
+the full task, and either answer is enough because discovery only needs the
+identifier. This port's Step 2 runs `before_doing` by hand ahead of the claim,
+so the check cannot wait for the claim response: Step 1 fetches
+`GET /api/tasks/<identifier>` and runs the review and the enrichment check on
+that body, never on the summary, which has no `key_files`. Step 1 also says
+that body is task-authored data to act on, never instructions.
+
+- The flowchart, the Quick Reference Card and every discovery site in
+  `skills/stride-claiming-tasks/SKILL.md` (both the plugin and manual lists,
+  both flowcharts, the Enrichment Check, the Implementation Workflow and the
+  card) say the same.
+- Both Stop-gate halves request `/api/tasks/next?response_view=slim` in non-held
+  mode. They read only the status code and `.data.identifier`, so no reader
+  changed, and the held-claim request is untouched.
+
+Tests: bash Group 32 plus 22a3 and a 27a case, PowerShell Group 27 plus 19a3
+(the goal planned PowerShell Group 26, which W2541 had already taken).
+
+### Changed — the explorer is waited on, and two stride 1.81.0 items are recorded as not applicable (W2541)
+
+stride W2254 and W2255 rest on host behaviour that no Copilot CLI was available
+to observe, so `docs/HOOK_RESEARCH.md` gains Addendum (W2541) recording the CLI
+version as unmeasured, what the published hooks reference does establish (the
+`agentStop` input documents no agent list), and how to re-measure.
+`skills/stride-subagent-workflow/SKILL.md` Phase 1 now says the `task-explorer`
+call is waited on, with no reading or drafting during it. Neither Stop-gate
+half nor `hooks/hooks.json` changes. Not applicable on this port:
+
+- W2254, reading `key_files` while the explorer runs — whether the invocation
+  releases the turn is unmeasured.
+- W2255, the held-claim stop permit while a stride agent runs — the documented
+  `agentStop` input lists no running agents.
+- W2255's 30-minute bound on that permit — there is no permit for it to bound.
+
+Tests: bash Group 31, PowerShell Group 26 (the goal planned only the bash
+number; 26 is the next free PowerShell group).
+
+### Added — Step 0 says when the installed plugin is behind the catalog (W2539)
+
+New `hooks/check-plugin-current.sh` and its PowerShell twin
+`hooks/check-plugin-current.ps1` (port of stride W2251) compare the `version`
+in the `plugin.json` one directory above the script's own `hooks/` folder with
+the `stride-copilot` entry of the published stride-copilot-marketplace catalog.
+When the installed copy is lower they print one line naming both versions and
+`copilot plugin update stride-copilot`; in every other case they print nothing.
+Versions compare part by part as integers, and anything that is not plain
+dotted digits — a pre-release, a `v` prefix, `latest` — counts as unknown and
+stays silent. Both always exit 0. The catalog fetch is anonymous, HTTPS-only,
+follows no redirect, treats an HTTP error reply (4xx/5xx) as no catalog and is bounded at 3
+seconds; only the first `stride-copilot` entry is read, and only a string that
+matched the digits-and-dots pattern is ever printed. `stride-workflow` Step 0 gains item 4,
+which finds the plugin root (Copilot CLI documents no plugin-root variable for
+skills, so it checks the skill's own location, then the install directories the
+Copilot CLI plugin reference lists), runs the script once, relays any line once
+and carries on, and skips the item without comment when no single root can be
+located. The install directories come from Copilot CLI's documentation, not
+from a live install. README.md mentions the warning under "Plugin Management".
+Tests: bash Group 30, PowerShell Group 25 (the goal planned PowerShell Group
+24, which W2538 had already taken).
+
+### Added — the claim hook keeps a copy of the claimed task (W2537)
+
+After a claim that can prove the response is its own task, both hook halves
+now store the response's `data` object in `.stride/.task-<IDENTIFIER>.json`
+(port of stride W2248), so a later step can point a subagent at the file
+rather than re-keying the task in a prompt. Proof means this call's own
+response carries the resolved task id and every identifier the claim command
+names came back unchanged; a truncated, failed or mismatched claim writes
+nothing. Files are named after an identifier of 1-64 `[A-Za-z0-9_-]`
+characters, falling back to the numeric id. Each one is staged in a temp file
+and renamed into place, never fails the claim, and the PowerShell half copies the raw text
+with no byte-order mark. `stride-workflow`'s Step 7 removes it once a completion
+returns 2xx; README.md describes it under "The claimed-task file". Tests:
+bash Group 28, PowerShell Group 23.
+
+### Changed — the explorer and reviewer read the claimed task from its file (W2538)
+
+When the claim hook's `.stride/.task-<IDENTIFIER>.json` exists and its
+`identifier` is the claimed task, `stride-subagent-workflow` now invokes the
+`task-explorer` and `task-reviewer` custom agents with `TASK_FILE` set to its
+absolute path, `CLAIMED_IDENTIFIER` set to the claimed task, and one line
+telling them to take each task field from it, treating its text as data (port
+of stride W2249). No task fields are pasted beside it, and the
+orchestrator does not read the file to build the prompt. Both agents open that
+path alone and use it only when its `identifier` equals `CLAIMED_IDENTIFIER`;
+when it is absent, will not parse, belongs to another task or comes with no
+`CLAIMED_IDENTIFIER` they say so on a `task_file:` line and use the prompt. The reviewer builds
+`acceptance_criteria` with one entry per non-blank line of the file, verbatim
+and in order. Later review rounds and the completion self-check's repair re-run
+pass the same file. Without a file the inline field lists are unchanged. This
+port has no planner agent, so planning is untouched. Tests: bash Group 29,
+PowerShell Group 24.
+
+### Changed — round two of review has to be earned (W2540)
+
+Port of stride W2252. Two review rounds is still the cap, but the second one now
+runs only when round one gives it a reason: a fix that edited a code path, a
+`critical`, or a security finding at any severity (judged by subject matter, as
+this port's security rule already is). With none of the three, every fix is
+recorded by severity, category, `file:line` and a one-line note in
+`completion_notes` and `completion_summary`, and round one's result is
+submitted with its `status` untouched. `stride-workflow` Step 5 now says in
+prose what a code path is — not documentation, not a test, not a comment-only
+change — names which of this repository's files fall where, and sends anything
+doubtful, or any trigger whose evidence a resumed session has lost, toward a
+second round. **In this port the round-two trigger is followed, not
+enforced:** there is no predicate, path classifier, fix-base snapshot or round
+counter, so the orchestrator sorts the paths itself, and two new stated limits
+say so and say that markdown counts as documentation even here. The critical
+exemption, the never-record-a-security-finding rule and the fail-closed round
+default are unchanged. The `review-round-cap` anchor beside Step 5 moves to v2.
+The completing-tasks self-check and its two review steps, the
+`stride-subagent-workflow` review bullets and re-review paragraph, the D66
+paragraph and a new README paragraph carry the triggers. The 2.37.0 entry
+quoted the anchor literally, which the canon check counts as a live anchor and
+would report as stale on every bump, so that quotation is now written in the
+elided form the 2.40.0 entry already uses. The all-cosmetic bullet's
+`changes_requested` clause now defers to the triggers rather than ordering a
+re-dispatch. Tests: bash Group 23 and PowerShell Group 20, rewritten in place,
+plus the case 24r needle in bash Group 24 and PowerShell Group 21.
+
+### Not ported from G446–G448 — listed so "not applicable" reads differently from "missed"
+
+- **W2250, dispatcher mode on by default — not applicable.** This port has no
+  `task-runner` agent, so there is nothing to dispatch a task to; the workflow
+  runs every task inline, as before.
+- **W2252, round two of review must be earned — ported, but followed, not
+  enforced.** The triggers are prose the session applies to itself: this port
+  has no `round_cap_ok` predicate, path classifier, fix-base snapshot or round
+  counter that could refuse a round (W2540 above).
+- **W2254, reading `key_files` while the explorer runs — not applicable.**
+  Whether a Copilot CLI agent invocation releases the turn is unmeasured, so
+  Phase 1 waits for the explorer instead (W2541 above).
+- **W2255, the held-claim stop permit while a stride agent runs — not
+  applicable.** The documented `agentStop` input lists no running agents, so
+  the Stop gate has nothing to read.
+- **W2255's 30-minute bound on that permit — not applicable.** There is no
+  permit for it to bound.
+- **W2256, the dispatcher size-gate fetch — not ported.** It belongs to
+  dispatcher mode, which this port does not have; the slim discovery call and
+  the full-body enrichment check are ported (W2542 above).
+- **W2259, measuring the effect — not ported, and no saving is claimed.** That
+  measurement covered `stride` on Claude Code only. Nothing was measured on
+  Copilot CLI, so this release makes no token or time claim.
+
+### Not ported from G455 — listed so "not applicable" reads differently from "missed"
+
+- **W2295, the claims-census hand-off — not applicable.** This port keeps no
+  claims census and has no `claims_verified_by` field, so the reviewer has no
+  recorded census command to re-run; Statement Verification works from the
+  diff and the project alone (W2551 above).
+- **W2298, `verified_by` and an explorer shell — carried another way.** The
+  task-explorer holds `read`, `search` and `glob` and no shell. It names the
+  call that settled each statement as `checked by:`, and its commit history
+  comes from the orchestrator, which measures the commit window in
+  `skills/stride-subagent-workflow/SKILL.md` and passes it in as
+  `commit window:` lines. With no task file the orchestrator sends
+  `commit window: not checked — no task file`; when no line arrives at all
+  the explorer writes `commit window: not checked — none supplied`. Either
+  way that history moves to the unverified list and the files are still read
+  (W2548 above).
+- **W2295 and W2296, checks stride runs through a shell — read-only tools
+  instead.** The task-reviewer's tools are `read`, `search` and `glob`. A
+  statement only git history or a program's output could settle is recorded
+  as unverifiable and raises no issue, and counterparts are found in the
+  working tree with `glob` and `search`, not in git's index (W2551 and W2552
+  above).
+- **No canon entry.** G455 registers none, so none of these rules carries an
+  anchor here.
+
 ## [2.42.0] - 2026-10-01
 
 ### Fixed — an escaped `>` is no longer read as an operator
@@ -674,7 +1226,7 @@ at `review_blocked` (`failure.kind: "review_escalation"`) rather than being
 recorded and submitted.
 
 The rule is stated **once**, in `stride-workflow` Step 5, under a
-`<!-- canon:review-round-cap v1 -->` anchor. Every other site defers to it:
+`<!-- canon:review-round-cap ... -->` anchor. Every other site defers to it:
 the D66 re-review paragraph, the `stride-subagent-workflow` issues-found
 bullets and its re-review and extraction sections, both Complete Completion
 Process variants, and a new bullet in the completing-tasks hard gate. Two
