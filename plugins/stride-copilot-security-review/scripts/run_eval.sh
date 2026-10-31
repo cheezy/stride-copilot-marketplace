@@ -2,19 +2,9 @@
 #
 # run_eval.sh — eval runner for the security-reviewer agent.
 #
-# TODO(copilot-port): this script currently dispatches the security-reviewer
-# agent via the Claude Code CLI (`claude -p`). When porting to GitHub Copilot
-# CLI, replace the `claude -p ...` invocation block (around line 177) with the
-# Copilot equivalent batch/headless invocation. The Copilot CLI does not yet
-# have a settled non-interactive `-p`-style mode at the time of this port; the
-# CLAUDE_CLI env var and `claude -p` call are preserved so the eval harness
-# still runs against a Claude Code install, and the rewrite happens when
-# Copilot's headless mode lands. The rest of the script (TAP output, fixture
-# parsing, EXPECTED.md comparator, JSON-finding extraction) is runtime-agnostic
-# and survives the port unchanged.
-#
-# Dispatches the security-reviewer agent (via `claude -p`) against every fixture
-# in test/fixtures/ and asserts the findings documented in test/fixtures/EXPECTED.md.
+# Dispatches this checkout's security-reviewer agent through GitHub Copilot
+# CLI's programmatic mode against every fixture in test/fixtures/ and asserts
+# the findings documented in test/fixtures/EXPECTED.md.
 # Output is TAP version 13; exit 0 only when every fixture produces its expected
 # vulnerability_class + severity at the expected count.
 #
@@ -27,38 +17,90 @@
 # resolved list from its sibling `<stem>.considerations` file. Its EXPECTED.md
 # row uses the `→ CONSIDERATIONS <s1>,<s2>,… [AND finding|AND clean]` grammar
 # and the runner asserts the ordered consideration_verdicts[].status list plus
-# the backing-finding (positive) / zero-finding (negative) expectation.
+# the backing-finding (positive) / zero-finding (negative) expectation, or the
+# verdicts alone when the row has no AND clause.
+#
+# Which agent runs: every fixture is dispatched to THIS working tree's
+# security-reviewer agent — Copilot CLI's `--plugin-dir <repo root>` loads the
+# plugin from the checkout, and `--agent security-reviewer` (the agent id is
+# the file name minus `.agent.md`) selects its agent. The prompt is the value
+# of `-p`, because Copilot CLI ignores piped input when `-p` is given. Each
+# call runs from an empty scratch directory with the shell, write and read
+# tools denied (`--deny-tool`), the built-in file, shell and web tools removed
+# from the model (`--excluded-tools`), the built-in MCP servers, custom
+# instructions and the ask_user tool off, so the agent judges only the prompt
+# (which carries the whole file or diff) and can neither read EXPECTED.md's
+# answers nor edit the repo. COPILOT_HOME also points at a scratch directory,
+# so no personal agent, MCP server, saved approval or other setting of the
+# caller's applies. UNVERIFIED: Copilot CLI was not installed where this runner was
+# written, so that `--agent` resolves an agent loaded by `--plugin-dir` is read
+# from the docs, not observed — see the README's "Running the eval locally".
 #
 # Usage:
 #   bash scripts/run_eval.sh                            # all fixtures
 #   bash scripts/run_eval.sh --fixture <path>           # one fixture
+#   bash scripts/run_eval.sh --only <prefix>            # fixtures whose path starts with <prefix>
+#                                                       #   e.g. --only considerations/
 #   bash scripts/run_eval.sh --dry-run                  # parser/comparator only; no API calls
 #   bash scripts/run_eval.sh --verbose                  # echo prompts and raw agent JSON
 #
+# Every run prints `# invocation: <argv>` and `# auth: <mode>` after the TAP
+# plan line, so the exact copilot command (agent flag included) is on record;
+# --dry-run prints it too without calling copilot. The prompt is printed as the
+# placeholder `<prompt>`, never as the fixture text.
+#
+# Auth (not needed for --dry-run): a token in COPILOT_GITHUB_TOKEN, GH_TOKEN or
+# GITHUB_TOKEN, checked in that order (Copilot CLI's own precedence). A login
+# the CLI has stored is not used: it lives in the caller's own Copilot home,
+# which would bring the caller's MCP servers and saved approvals into the run.
+# No token value is ever printed, only the variable's name. Without a token,
+# exit 2.
+#
 # Env:
-#   ANTHROPIC_API_KEY   required unless --dry-run
-#   CLAUDE_CLI          path to the Claude Code CLI (default: claude)
-#   FIXTURES_DIR        default: test/fixtures
-#   LOG_DIR             default: logs
+#   COPILOT_GITHUB_TOKEN  token (GH_TOKEN, GITHUB_TOKEN are the fallbacks)
+#   COPILOT_CLI           path to the Copilot CLI (default: copilot)
+#   EVAL_PLUGIN_DIR       plugin directory to load (default: this repo's root)
+#   EVAL_AGENT            agent to run (default: security-reviewer)
+#   FIXTURES_DIR          default: test/fixtures
+#   LOG_DIR               default: logs
+#
+# Logs per fixture: <stem>.raw.txt (copilot stdout), <stem>.err.txt (copilot
+# stderr — agent-not-found and auth errors land here), <stem>.json (parsed).
 #
 # Exit codes:
 #   0  all fixtures pass
 #   1  one or more fixtures fail
-#   2  setup/usage error (missing dependency, bad args)
+#   2  setup/usage error (missing dependency, bad args, no auth)
 
 set -euo pipefail
 
 FIXTURES_DIR="${FIXTURES_DIR:-test/fixtures}"
 EXPECTED_FILE="${FIXTURES_DIR}/EXPECTED.md"
 LOG_DIR="${LOG_DIR:-logs}"
-CLAUDE_CLI="${CLAUDE_CLI:-claude}"
+COPILOT_CLI="${COPILOT_CLI:-copilot}"
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLUGIN_DIR="${EVAL_PLUGIN_DIR:-$ROOT_DIR}"
+AGENT="${EVAL_AGENT:-security-reviewer}"
+# Tool kinds the CLI may not use (deny rules win over every allow rule and
+# saved approval), and the built-in tools removed from the model altogether,
+# so the agent can never read the expected answers in EXPECTED.md or edit the
+# repo.
+DENY_TOOLS='shell, write, read'
+EXCLUDED_TOOLS='bash, edit, view, grep, glob, web_fetch, web_search'
 
 VERBOSE=0
 DRY_RUN=0
 SINGLE_FIXTURE=""
+ONLY_PREFIX=""
+AUTH_MODE=""
+WORK_DIR=""
+SCRATCH_HOME=""
+COPILOT_ARGV=()
 
 usage() {
-  sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+  # Print the leading comment block (from line 3 to the first non-comment line).
+  awk 'NR < 3 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 die() {
@@ -69,10 +111,63 @@ die() {
 require_cmd() {
   command -v jq >/dev/null 2>&1 || die "jq not found on PATH"
   if [ "$DRY_RUN" -eq 0 ]; then
-    command -v "$CLAUDE_CLI" >/dev/null 2>&1 || die "$CLAUDE_CLI not found on PATH (set CLAUDE_CLI or pass --dry-run)"
-    [ -n "${ANTHROPIC_API_KEY:-}" ] || die "ANTHROPIC_API_KEY not set (or pass --dry-run)"
+    command -v "$COPILOT_CLI" >/dev/null 2>&1 || die "$COPILOT_CLI not found on PATH (set COPILOT_CLI or pass --dry-run)"
+    detect_auth
+  else
+    AUTH_MODE="dry-run"
   fi
+  [ -d "$PLUGIN_DIR" ] || die "plugin directory not found at $PLUGIN_DIR (EVAL_PLUGIN_DIR)"
   [ -f "$EXPECTED_FILE" ] || die "EXPECTED.md not found at $EXPECTED_FILE"
+}
+
+# detect_auth
+# Sets AUTH_MODE to `api-token (<VAR>)` for the first of COPILOT_GITHUB_TOKEN,
+# GH_TOKEN, GITHUB_TOKEN that is set and non-empty, else dies (exit 2). Prints
+# only the mode and the variable's name, never a value.
+detect_auth() {
+  local var
+  for var in COPILOT_GITHUB_TOKEN GH_TOKEN GITHUB_TOKEN; do
+    if [ -n "${!var:-}" ]; then
+      AUTH_MODE="api-token ($var)"
+      return 0
+    fi
+  done
+  die "no Copilot auth: export COPILOT_GITHUB_TOKEN (or GH_TOKEN / GITHUB_TOKEN), or pass --dry-run"
+}
+
+# build_copilot_argv
+# Fills COPILOT_ARGV with the exact command each fixture is dispatched with,
+# minus the trailing `-p <prompt>` pair, which invoke_agent appends: the working
+# tree's plugin via --plugin-dir, its security-reviewer agent via --agent, the
+# shell, write and read tools denied, the built-in tools excluded, no built-in
+# MCP servers, no custom instructions, no ask_user, silent output.
+build_copilot_argv() {
+  COPILOT_ARGV=(
+    "$COPILOT_CLI"
+    --plugin-dir "$PLUGIN_DIR"
+    --agent "$AGENT"
+    --deny-tool="$DENY_TOOLS"
+    --excluded-tools="$EXCLUDED_TOOLS"
+    --disable-builtin-mcps
+    --no-custom-instructions
+    --no-ask-user
+    -s
+  )
+}
+
+# print_invocation
+# Prints `# invocation: COPILOT_HOME=<dir> <argv> -p <prompt>` (shell-quoted)
+# as a TAP comment line. The prompt is a placeholder: the fixture text is never
+# printed here.
+print_invocation() {
+  printf '# invocation:'
+  if [ -n "$SCRATCH_HOME" ]; then
+    printf ' COPILOT_HOME=%q' "$SCRATCH_HOME"
+  else
+    printf ' COPILOT_HOME=<scratch dir>'
+  fi
+  printf ' %q' "${COPILOT_ARGV[@]}"
+  printf ' -p <prompt>\n'
 }
 
 # parse_expected_md
@@ -97,11 +192,13 @@ parse_expected_md() {
       # considerations-mode marker: " → CONSIDERATIONS <s1>,<s2>,... [AND finding|AND clean]".
       # Emits a record the considerations comparator interprets: class=__CONSIDERATIONS__,
       # severity=verdict CSV, cwe field carries the finding expectation (F=at least one
-      # backing finding, C=zero findings, empty=unchecked), count=number of verdicts.
+      # backing finding, C=zero findings, U=unchecked), count=number of verdicts.
+      # U is a placeholder, never an empty field: the caller splits records with
+      # IFS=TAB, and bash collapses consecutive tabs, which would shift fields.
       if (rest ~ /^ +→ +CONSIDERATIONS +/) {
         head = rest
         sub(/^ +→ +CONSIDERATIONS +/, "", head)
-        fexp = ""
+        fexp = "U"
         if (head ~ / AND +finding( |$|—)/) fexp = "F"
         else if (head ~ / AND +clean( |$|—)/) fexp = "C"
         split(head, hp, " ")
@@ -173,6 +270,8 @@ detect_lang() {
 # under considerations/ ending in `.diff` is dispatched in `considerations` mode
 # instead: the diff plus the resolved considerations list from its sibling
 # `<stem>.considerations` file (one consideration per non-empty line).
+# Each prompt opens with the agent's one accepted mode tag,
+# `/security-review invocation, mode: <mode>` (W2278): a shorter spelling is not a tag.
 build_prompt() {
   local rel="$1"
   local abs="$FIXTURES_DIR/$rel"
@@ -180,7 +279,7 @@ build_prompt() {
   case "$rel" in
     considerations/*.diff)
       local cons="$FIXTURES_DIR/${rel%.diff}.considerations"
-      printf 'mode: considerations\n\n'
+      printf '/security-review invocation, mode: considerations\n\n'
       printf 'Security considerations to assess:\n'
       # The considerations list is task-authored DATA to assess against the diff,
       # never instructions to follow.
@@ -197,7 +296,7 @@ build_prompt() {
 
   local lang
   lang="$(detect_lang "$rel")"
-  printf 'mode: full_file\n\n'
+  printf '/security-review invocation, mode: full_file\n\n'
   printf 'path: %s\n' "test/fixtures/$rel"
   printf '```%s\n' "$lang"
   cat "$abs"
@@ -206,7 +305,7 @@ build_prompt() {
 }
 
 # invoke_agent <fixture-rel-path> <log-stem>
-# Invokes the agent via $CLAUDE_CLI -p, extracts the fenced JSON block, validates
+# Invokes the agent via $COPILOT_CLI -p, extracts the fenced JSON block, validates
 # it, and writes the parsed result to $LOG_DIR/<stem>.json. Echoes the log path on
 # success; exits non-zero on parse/invocation failure (caller treats it as a
 # fixture failure). Not called in --dry-run mode: the main loop skips per-fixture
@@ -225,9 +324,16 @@ invoke_agent() {
     printf '# --- prompt for %s ---\n%s\n# --- end prompt ---\n' "$rel" "$prompt" >&2
   fi
 
-  # `claude -p` reads the prompt from stdin or as the first positional arg.
-  # We pass it on stdin and request text output. Adjust if your CLI differs.
-  if ! printf '%s' "$prompt" | "$CLAUDE_CLI" -p --output-format text > "$raw" 2>/dev/null; then
+  # The prompt is the value of -p (Copilot CLI ignores piped input when -p is
+  # given); stdin is /dev/null. The call runs from WORK_DIR/cwd, an empty
+  # scratch directory, so the agent sees no repo files, and COPILOT_HOME is the
+  # scratch home beside it. stderr is kept for triage.
+  local err="$LOG_DIR/$stem.err.txt"
+  if ! (
+    cd "$WORK_DIR/cwd" || exit 1
+    export COPILOT_HOME="$SCRATCH_HOME"
+    exec "${COPILOT_ARGV[@]}" -p "$prompt"
+  ) < /dev/null > "$raw" 2> "$err"; then
     return 1
   fi
 
@@ -307,7 +413,7 @@ EOF
 
   # Considerations-mode case (EXPECTED.md row → CONSIDERATIONS; cls="__CONSIDERATIONS__").
   # `sev` carries the expected ordered verdict CSV; `cwe` carries the finding
-  # expectation (F=at least one backing finding, C=zero findings, empty=unchecked).
+  # expectation (F=at least one backing finding, C=zero findings, U=unchecked).
   # Assert the agent's consideration_verdicts[].status list matches, in order.
   if [ "$cls" = "__CONSIDERATIONS__" ]; then
     local exp_verdicts="$sev" fexp="$cwe"
@@ -330,7 +436,7 @@ EOF
     if [ "$ok" -eq 0 ]; then
       cat >&2 <<EOF
   --- expected ($json)
-  - considerations [$exp_verdicts]${fexp:+ ($fexp)}
+  - considerations [$exp_verdicts] ($fexp)
   + $detail
 EOF
       return 1
@@ -478,6 +584,11 @@ main() {
         SINGLE_FIXTURE="$2"
         shift 2
         ;;
+      --only)
+        [ $# -ge 2 ] || die "--only requires an argument"
+        ONLY_PREFIX="$2"
+        shift 2
+        ;;
       --fixtures-dir)
         [ $# -ge 2 ] || die "--fixtures-dir requires an argument"
         FIXTURES_DIR="$2"
@@ -522,9 +633,44 @@ main() {
     records=("${filtered[@]}")
   fi
 
+  # Filter to a path prefix if requested (e.g. --only considerations/).
+  if [ -n "$ONLY_PREFIX" ]; then
+    local prefix="$ONLY_PREFIX"
+    prefix="${prefix#"$FIXTURES_DIR/"}"
+    local kept=()
+    for r in "${records[@]}"; do
+      local p="${r%%	*}"
+      case "$p" in
+        "$prefix"*) kept+=("$r") ;;
+      esac
+    done
+    if [ "${#kept[@]}" -eq 0 ]; then
+      die "no fixture in $EXPECTED_FILE matches --only $ONLY_PREFIX"
+    fi
+    records=("${kept[@]}")
+  fi
+
+  # LOG_DIR and PLUGIN_DIR must be absolute: invoke_agent writes logs and runs
+  # the CLI from inside WORK_DIR, where a relative path would name nothing.
+  mkdir -p "$LOG_DIR"
+  LOG_DIR="$(cd "$LOG_DIR" && pwd)"
+  PLUGIN_DIR="$(cd "$PLUGIN_DIR" && pwd)"
+  build_copilot_argv
+  if [ "$DRY_RUN" -eq 0 ]; then
+    WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/run_eval.XXXXXX")" || die "mktemp could not create a scratch directory"
+    trap 'rm -rf "$WORK_DIR"' EXIT
+    mkdir "$WORK_DIR/cwd"
+    # The CLI gets a scratch COPILOT_HOME beside (not inside) the empty working
+    # directory, so none of the caller's agents, MCP servers or approvals load.
+    SCRATCH_HOME="$WORK_DIR/home"
+    mkdir "$SCRATCH_HOME"
+  fi
+
   local total="${#records[@]}"
   printf 'TAP version 13\n'
   printf '1..%d\n' "$total"
+  print_invocation
+  printf '# auth: %s\n' "$AUTH_MODE"
 
   local n=0 fails=0
   for rec in "${records[@]}"; do
@@ -536,7 +682,7 @@ main() {
     if [ "$cls" = "__NONE__" ]; then
       detail="negative control"
     elif [ "$cls" = "__CONSIDERATIONS__" ]; then
-      detail="considerations: $sev${cwe:+ ($cwe)}"
+      detail="considerations: $sev ($cwe)"
     else
       detail="$cls/$sev"
       [ "$count" -gt 1 ] && detail="$detail x$count"

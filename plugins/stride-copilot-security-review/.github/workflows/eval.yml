@@ -1,13 +1,5 @@
 name: eval
 
-# TODO(copilot-port): this workflow installs and runs the Claude Code CLI
-# (`@anthropic-ai/claude-code` from npm) to dispatch the security-reviewer agent
-# against the fixture set. When porting to GitHub Copilot CLI, replace the
-# "Install Claude Code CLI" step and any subsequent `claude -p` invocation with
-# the Copilot CLI equivalent once a non-interactive batch mode is available.
-# The matrix shape, fixture path filters, and TAP-output consumption are
-# runtime-agnostic and stay as-is.
-
 on:
   workflow_dispatch:
   push:
@@ -16,14 +8,16 @@ on:
       - 'agents/**'
       - 'skills/**'
       - 'test/fixtures/**'
-      - 'scripts/run_eval.sh'
+      - 'scripts/**'
+      - 'plugin.json'
       - '.github/workflows/eval.yml'
   pull_request:
     paths:
       - 'agents/**'
       - 'skills/**'
       - 'test/fixtures/**'
-      - 'scripts/run_eval.sh'
+      - 'scripts/**'
+      - 'plugin.json'
       - '.github/workflows/eval.yml'
 
 permissions:
@@ -32,27 +26,80 @@ permissions:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # One sequential copilot call per fixture. No run of this runner has been
+    # recorded yet (EXPECTED.md "Recorded runs"); upstream's 45 minutes is kept
+    # as the starting budget.
+    timeout-minutes: 45
     steps:
       # actions/checkout v4.2.2 — pin to commit SHA, the plugin flags floating tags.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      # actions/setup-node v4.1.0
+      # actions/setup-node v4.1.0 — Copilot CLI needs Node.js 22 or later.
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install jq
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
+      # Fixture/EXPECTED.md parity guard — no token, no Copilot CLI. Runs first
+      # so a fixture added without its EXPECTED.md row (or vice versa) fails fast
+      # and cheap, before any model spend.
+      - name: Check fixture/EXPECTED.md parity
+        run: bash scripts/check_fixtures.sh
+
+      # Text pins on the agent's tools line, SECURITY_RESULT_PATH contract,
+      # considerations-mode rules and read-only contract with its probe sandbox
+      # (W2276, D376, D378), and its one mode-tag spelling, with the tags the
+      # skill sends and its --considerations row (W2278) — no token, no Copilot CLI.
+      - name: Check the agent contract
+        run: bash scripts/check_agent_contract.sh
+
+      # The eval's copilot invocation loads THIS repo's security-reviewer agent
+      # (--plugin-dir + --agent), runs it from an isolated cwd with the tools
+      # denied, and gates on auth (W2570, porting W2274) — checked against a fake
+      # CLI, so no token and no Copilot CLI. It also executes the "Detect
+      # COPILOT_GITHUB_TOKEN" script below for each event, so the
+      # skip-on-PR / fail-on-main gate is tested, not just read.
+      - name: Check the eval invocation
+        run: bash scripts/check_eval_invocation.sh
+
+      # Fails loudly on main, skips quietly on pull requests. The agent eval below
+      # needs COPILOT_GITHUB_TOKEN; everything above does not.
+      # - push to main / workflow_dispatch: a missing token is a configuration
+      #   error, so the job FAILS (::error + exit 1) instead of skipping. A green
+      #   run on main therefore always means the agent eval actually ran.
+      # - pull_request: GitHub withholds secrets from fork PRs (and Dependabot
+      #   PRs), so a missing token there is expected — emit a notice and skip the
+      #   CLI install + eval; the token-free checks above have already run.
+      # The event name comes in through env, never through a template expression
+      # inside `run:`. The token's value is only ever tested for emptiness.
+      - name: Detect COPILOT_GITHUB_TOKEN
+        id: token
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ -n "${COPILOT_GITHUB_TOKEN:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Agent eval skipped::COPILOT_GITHUB_TOKEN is not available to this pull request (fork and Dependabot PRs get no secrets) — skipping the Copilot CLI install and the agent eval (scripts/run_eval.sh). The token-free checks still ran and passed."
+          else
+            echo "::error title=Agent eval cannot run::COPILOT_GITHUB_TOKEN is not configured for this repository, so the agent eval (scripts/run_eval.sh) cannot run on ${EVENT_NAME}. Add a fine-grained personal access token with the Copilot Requests permission under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - name: Install Copilot CLI
+        if: steps.token.outputs.present == 'true'
+        run: npm install -g @github/copilot
 
       - name: Run eval
+        if: steps.token.outputs.present == 'true'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
         run: bash scripts/run_eval.sh
 
       # actions/upload-artifact v4.4.3 — upload logs on failure for triage.
