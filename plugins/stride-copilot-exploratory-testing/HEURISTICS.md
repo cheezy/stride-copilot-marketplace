@@ -1,10 +1,10 @@
 # Heuristics — quick reference
 
 **The canonical heuristics catalog lives in the [`heuristics` skill](skills/heuristics/SKILL.md).**
-That skill is the single source of truth — the general and web cheat sheets, the
-variable-spotting catalog, and Whittaker's Tours grouped by district. This file is a
-signpost, not a copy: the tables are intentionally **not** duplicated here so they
-never drift out of sync.
+That skill is the single source of truth — the general and web cheat sheets with
+their change-risk lenses, the variable-spotting catalog, and Whittaker's Tours
+grouped by district. This file is a signpost, not a copy: the tables are
+intentionally **not** duplicated here so they never drift out of sync.
 
 ## When you want a named lens
 
@@ -16,6 +16,11 @@ systematically walk a feature. At a glance, it holds:
   Follow the Data, and more) for turning a charter into concrete probes.
 - **Web heuristics** — lenses specific to browser/HTTP targets (Multiple Tabs,
   Cookies/Session, Back Button, and others).
+- **Change-risk lenses** — chosen by the kind of change under test, each with a
+  *When it applies* trigger. General: Change the Rights, Shadow Decision,
+  Who Else Is Watching, Pull the Rug, Every Surface, Every Locale,
+  Developer Guidebook, Leave No Trace, Telemetry Semantics. Web only:
+  Other Verbs, After the Headers, Response Hardening.
 - **The Variable Catalog** — the dimensions worth varying (Format, Size, Timing,
   Sequence, Count, Position, Geography/locale, Input method, Files & storage, …).
 - **Whittaker's Tours** — touring strategies for surveying an application

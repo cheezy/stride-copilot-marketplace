@@ -53,14 +53,14 @@ Dispatch the plugin's `charter-generator` subagent via the platform's agent-disp
 - `coverage context=<COVERAGE_CONTEXT>` — only when Step 2 produced one; omit otherwise. This is what stops the agent re-proposing the same top-ranked charters on every run against the same target.
 - `risk context=<RISK_CONTEXT>` — only when `--risk` was supplied; omit otherwise.
 
-The agent has its own read-only codebase access (`read`, `search`, `glob`) and will sharpen charters against real structure when the target names or points at code; it works from the description alone when no code is available. It runs no Q&A loop — target in, ranked charters out. Do NOT re-implement the charter doctrine here or hand-author charters yourself; the agent owns that.
+The agent has its own read-only codebase access (`read`, `search`) and will sharpen charters against real structure when the target names or points at code; it works from the description alone when no code is available. It runs no Q&A loop — target in, ranked charters out. Do NOT re-implement the charter doctrine here or hand-author charters yourself; the agent owns that.
 
 ### Step 4: Parse the agent's JSON output
 
 The agent returns a **single fenced ```json document** and nothing else. Extract the first ```json fence and parse it. The parsed object has these root keys (contract owned by `agents/charter-generator.agent.md`):
 
 - `target` (string) — the target as the agent interpreted it.
-- `charters` (array, ranked highest-risk-first, never empty) — each charter object has `rank`, `charter`, `target`, optional `resources`, `information`, `risk`, `source` (one of `requirements`, `implicit-expectation`, `stakeholder-question`, `artifact`, `nightmare-headline`, `sfdpot`), optional `lens` (only when `source: sfdpot`), and `time_box` (≤2h).
+- `charters` (array, ranked highest-risk-first, never empty) — each charter object has `rank`, `charter`, `target`, optional `resources`, `information`, `risk`, `source` (one of `requirements`, `implicit-expectation`, `stakeholder-question`, `artifact`, `nightmare-headline`, `sfdpot`, `change-risk` — which the agent emits only when handed a `change context`, and this skill never hands it one), optional `lens` (only when `source: sfdpot`), and `time_box` (≤2h).
 - `coverage_notes` (optional string) — angles the agent deliberately skipped, splits it made, or assumptions it charted under.
 - `deprioritized` (optional array of strings) — present only when a `coverage context` was supplied: charter ideas the agent ranked down or dropped because prior coverage shows the ground was already explored, each with the reason. This is **not** `coverage_notes` — `coverage_notes` is about SFDIPOT angles the agent chose to skip; `deprioritized` is about ground a previous session already covered.
 

@@ -132,6 +132,13 @@ Sessions persist four artifacts in a small tree under `.exploratory/` in **the p
 
 The full convention — paths, the timestamp and slug rules, the `.gitignore` line, each artifact's lifecycle and write mechanics, and the exact header blocks in *The backlog format* and *The coverage outline format* — is in [references/session-artifacts.md](references/session-artifacts.md), a file in this skill's own directory, which Copilot makes available whenever the skill is invoked. **Read it before any write to `.exploratory/`**; a session that writes nothing there does not need it.
 
+## Explorer references
+
+Two rule sets the `explorer` agent follows live beside this file, outside the agent body, which Copilot caps at 30,000 characters. Copilot makes both available whenever this skill is invoked:
+
+- [references/explorer-verify-mode.md](references/explorer-verify-mode.md) — how the explorer re-checks one fixed bug when its environment context carries `EXPLORATORY_MODE=verify`. An explorer that cannot read it runs zero probes and returns `verify.result: "not_verified"`, never a pass.
+- [references/explorer-reading.md](references/explorer-reading.md) — how the explorer locates and reads files in bounded ranges. It never loosens the credential-file rule.
+
 ## Safety of session artifacts
 
 Session notes and debriefs are examples and reports — they **must not include real user data, credentials, or internal hostnames**; use placeholders and redact. And a debrief reports **externally verifiable facts** — what actually happened and what was actually observed — never fabricated or assumed results. If a result wasn't observed, it belongs under "unknown," not "found."

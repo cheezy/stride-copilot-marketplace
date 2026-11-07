@@ -52,6 +52,28 @@ Sometimes you cannot compute the one correct answer (complex domain logic, non-d
 - **Invert the result** — reverse the operation and check you recover the input. Encode→decode, export→import, create→read, zip→unzip should round-trip to the original.
 - **Select extreme conditions** — choose inputs where the correct answer *is* knowable: the empty case, the identity element, a single item, the maximum. The general answer may be opaque, but the extremes are checkable.
 
+## Adapter Is Not the Wire
+
+Some tests never open a socket. They pass the request to the app through an **in-process test adapter** — a test connection, a mock transport, a helper that calls the router directly — and read back the response the app assembled. That shows what the app built, whole, and nothing of what a real server does once the status line and headers have gone out. For four kinds of behaviour, a result seen only through an adapter is a *claim* to check, not an observation:
+
+- **streamed or chunked responses** — what reaches the client when the source fails part-way through;
+- **`HEAD` requests** — whether the reply carries the headers and no body;
+- **connection aborts** — what each side does when the other drops the connection mid-response;
+- **`Content-Length`** — whether the length the server declares matches the bytes it sends.
+
+Check the claim on a real server: the authorized non-production target, at a host you were given, with `curl -q -sS -i` through `execute`. This oracle grants no new reach, and it never needs one. When you cannot check it, record the wire claim under `debrief.unknown`, never under `found`, and file no bug on it. It does not fire on a charter whose responses are none of the four: an ordinary buffered response seen through an adapter is judged by the other oracles as usual.
+
+*Example:* a report export passes its test through the adapter, with a `200` and the whole file. Served for real, the file streams after the `200` is already sent, so a source that breaks part-way leaves the client a `200` and a short file that looks finished. The adapter's pass says nothing about that window. Request the export with `curl -q -sS -i` against the running app on a listed host, or write "streamed export not observed on the wire" under `debrief.unknown`. The **After the Headers** lens in the `heuristics` skill shapes the probe; this oracle judges what it shows.
+
+## Two Decision Sites
+
+Sometimes the **client and the server each decide the same thing** — whether a user may act, how much of a quota is left, what kind of file this is, which plan an account is on. Then the two sites must **agree in every state**. A disagreement is a finding whichever site is right: the user is offered an action the server refuses, or kept from one it would accept.
+
+- Name the states that can move the decision — signed out, one below a limit, at it, past it, changed from another session, a page left open while the server's state moved on — and check both sites in each.
+- A client that matches the server in every state you tried is **Acceptable**. One state where they part is a **Defect**, and the server's answer is the one the client must follow.
+
+*Example:* a quota has one slot left and a second session takes it; the first session's add button stays enabled, and pressing it gets a vague server error. Or a file picker accepts a type the server then rejects. Each is two decision sites disagreeing. The **Shadow Decision** lens in the `heuristics` skill shapes the probe; this oracle judges what it shows.
+
 ## Quality-criteria checklist → Never/Always
 
 To surface Never/Always rules systematically, walk the **quality criteria** (the "-ilities" from the Heuristic Test Strategy Model). For each, ask "what must this feature *never* do, and *always* do?"
@@ -70,7 +92,7 @@ Sweep these criteria over the target and you get a Never/Always set that turns v
 
 ## Safety of oracle examples
 
-Security-flavored Never/Always examples (e.g. "never store secrets in cleartext") are illustrative — they **must not embed real secrets, tokens, or credentials**; use placeholders. And oracle evaluation is about judging results from **a system you are authorized to test** — this guidance never encourages probing or comparing against systems the user has no permission to test.
+Security-flavored Never/Always examples (e.g. "never store secrets in cleartext") are illustrative — they **must not embed real secrets, tokens, or credentials**; use placeholders. And oracle evaluation is about judging results from **a system you are authorized to test** — this guidance never encourages probing or comparing against systems the user has no permission to test. Checking wire behaviour on a real server is a probe like every other: it reaches only the authorized non-production target and its listed hosts, and *Adapter Is Not the Wire* grants no new reach.
 
 ## Handing off
 

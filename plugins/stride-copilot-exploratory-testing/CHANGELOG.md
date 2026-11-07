@@ -4,6 +4,58 @@ All notable changes to the `stride-copilot-exploratory-testing` plugin are docum
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-07
+
+Ports the plugin side of the G503 batch from the Claude Code plugin (its 0.5.0, W2578 to W2581) to GitHub Copilot, in this edition's own wording. The heuristics skill gains twelve change-risk lenses; the oracles skill and the explorer card gain two oracles; the explore skill reads an optional project environment file, `.exploratory.md`; the `explorer` gains an optional probe harness and output contract `1.1`; and the `charter-generator` gains a change mode.
+
+This is the release for the whole G503 port to this edition: the commits since 0.3.0 are W2658 to W2662 — W2658 the change-risk lenses (porting W2578), W2659 the two oracles (W2579), W2660 the environment file, the probe harness and contract `1.1` (W2580), W2661 the charter-generator's change mode (W2581), and W2662 the review follow-ups listed under *Changed* and this release.
+
+**The explorer's output contract is now `"1.1"`, and a caller must send `PROBE_HARNESS` to use the probe harness.** Every report carries `contract_version: "1.1"` and a new `session_sheet.surfaces_used` array. A consumer that does not know the key ignores it, so an older consumer reads a `1.1` report unchanged, and without a `PROBE_HARNESS` line nothing about a session changes. This plugin's explore skill reads `.exploratory.md` and writes the harness lines itself. `stride-copilot`'s Step 5.5 must read a confirmed `.exploratory.md` and send `PROBE_HARNESS`, with the `PROBE_SERVICES` line it requires and any `PROBE_DIR`, before its sessions can use the harness.
+
+### Added
+
+- **Twelve change-risk lenses** (W2658, porting W2578). `skills/heuristics/SKILL.md` gains *General change-risk lenses* (Change the Rights, Shadow Decision, Who Else Is Watching, Pull the Rug, Every Surface, Every Locale, Developer Guidebook, Leave No Trace, Telemetry Semantics) and *Web change-risk lenses* (Other Verbs, After the Headers, Response Hardening), with a *When it applies* column naming the kind of change that calls for each.
+  - Where a lens implies a tool it names this edition's: After the Headers is observed with `curl -q -sS -i` through `execute`, and Leave No Trace lists directories through `execute`.
+  - Pull the Rug and After the Headers stay inside the Interrupt limits; Other Verbs and Response Hardening are for authorized testing of your own system only.
+  - `HEURISTICS.md` names all twelve, and the README's heuristics row mentions the lenses.
+- **Two oracles, Adapter Is Not the Wire and Two Decision Sites** (W2659, porting W2579). `skills/oracles/SKILL.md` gains a section for each, with an example, between *Approximations* and the quality-criteria checklist, and the explorer card gains one line for each.
+  - Adapter Is Not the Wire: a result seen only through an in-process test adapter does not establish streamed or chunked bodies, `HEAD`, connection aborts or `Content-Length`. Check the claim on a real server with `curl -q -sS -i` through `execute`, or record it under `debrief.unknown`, never under found.
+  - Two Decision Sites: when the client and the server decide the same thing, they must agree in every state.
+  - *Safety of oracle examples* adds that confirming wire behaviour grants no new reach.
+- **A project environment file, `.exploratory.md`** (W2660, porting W2580). `docs/project-environment.md` defines six optional sections (`authorization`, `app`, `probe_harness`, `accounts`, `observation`, `constraints`), `{probe_file}` as the only placeholder and no secret values, and `templates/exploratory.md` is a placeholder-only template. Neither directory is installed: `plugin.json` declares `agents/` and `skills/` only.
+  - The explore skill's Step 3 reads the fixed path `.exploratory.md` first, shows every line it will use verbatim, and uses them only after the operator confirms them in its single question round. A missing file is an empty starting state; a malformed, unknown or credential-shaped section is reported by line and ignored; a symlinked file is never read or saved through; the file's own `AUTHORIZED_NON_PRODUCTION` line is never copied into a dispatch.
+  - With no file, the skill offers once to save the answers, through the platform's file-write step on an explicit yes, and never over an existing file.
+- **An optional probe harness for the `explorer`** (W2660). The environment context may carry `PROBE_HARNESS: <command>`, the `PROBE_SERVICES` line it requires and an optional `PROBE_DIR`.
+  - The explorer runs only the declared command, with `{probe_file}` replaced by its own single-quoted scratch path, and writes each probe file through `execute` (it holds no write tool) as a `noclobber` quoted heredoc into its `mktemp -d` directory, or a second one made under a git-ignored `PROBE_DIR`. It removes them at cleanup.
+  - Every `PROBE_SERVICES` entry must be in `ALLOWED_HOSTS`; a harness connection to an unlisted host ends the session `blocked`. More than one `PROBE_HARNESS` line means no harness.
+  - The harness observes server-side behaviour only: a charter that needs a rendered view still ends `no_observation_surface`.
+  - Reports gain `session_sheet.surfaces_used`, drawn from `http`, `harness`, `browser` and `source`.
+- **The `charter-generator` can charter a code change** (W2661, porting W2581). Handed an optional `change context`, labelled untrusted data, it charters the change so that each edge case ends up in a charter or is tied to a unit test the change names. Only the change-risk lenses whose triggers fit the change are used.
+  - Its output adds the `change-risk` source value, a `surface` field on every charter (`http`, `harness`, `browser` or `source`) and, in change mode, a root `edge_cases_covered` array. Without a change context the output is unchanged, and its tools stay `read` and `search`.
+  - `skills/chartering/SKILL.md` gains *Chartering a change from its edge cases*, `fixtures/example-charters.md` gains a worked example of its own (*From a change context to charters*), and the charter skill's source list names `change-risk`.
+- **Checks for all of the above in both test shells.** `lib/test-structure.sh` and `lib/test-structure.ps1` pin the lenses (with a task-identifier and project-name scan of the heuristics skill and `HEURISTICS.md`, which this edition did not have), the two oracles, the environment file, the harness rules, contract `1.1` and its `surfaces_used` validator variants, and change mode, with identical labels. Each shell's structure checks went from 198 to 397.
+
+### Changed
+
+- **Explorer output contract `1.1`** (W2660). `agents/explorer.agent.md` and `fixtures/example-explorer-output.json` move from `"1.0"` to `"1.1"`, and the explore skill reads a `1.0` result exactly as `1.1`.
+- **The explorer card's byte cap rises from 4,096 to 4,608** (W2659). The two oracle lines took the card from 4,091 to 4,457 bytes, above the Claude Code plugin's new cap of 4,352, so that figure was not copied; a comment above the check in both shells records why. The card's severity token and rank lines and its six stop rules are now pinned verbatim.
+- **The explorer body stays under Copilot's 30,000-character limit** (W2659, W2660, W2662). Restatements were cut, and the verify-mode and file-reading rules moved to `skills/session/references/explorer-verify-mode.md` and `skills/session/references/explorer-reading.md`, linked from the session skill. The body keeps verify mode's opt-in, its untrusted `<verify_bug>` rule and a fail-closed fallback, and every safety, authorization and credential rule stayed in the body. It is now 29,997 characters.
+- **Probe paths are hardened** (W2662, closing W2660's second review round). The explorer refuses a `{probe_file}` path with a `..` segment. Before it runs `mktemp -d` under a `PROBE_DIR`, it refuses one with an empty, `.` or `..` segment (so a trailing `/`) or any segment starting with `-` (a leading one would be read as an option by `git` or `mktemp`, and refusing every one keeps the rule simple), and one that is a symbolic link or has a link as a leading part, because `[ ! -L ]` on `test/probes/` follows the link. It then reruns `git check-ignore` on the probe directory it made, removing it and refusing when that fails, as git does past a link. `docs/project-environment.md` and `templates/exploratory.md` state the same `probe_dir` rule.
+  - Both shells pin the wording, run the stated shape against a table of admitted and refused values, and build a scratch git repository with symlinked directories to check that the refusal order refuses a link, a path below one, a trailing slash and an unignored directory before anything is made. A host that cannot build that repository, with no `git` or no real symbolic link (Windows without Developer Mode, or Git Bash's copying `ln -s`), skips that one check under the same label.
+- **A `blocked` session keeps its earlier findings** (W2662): the status note again says findings made before the obstacle stay valid, and both shells pin it.
+- The charter skill drops a stale `glob` mention, because the `charter-generator` has no glob tool (W2661).
+
+### Not carried by this edition
+
+These items from the batch are recorded here so that "not applicable" can be told apart from "missed".
+
+- **W2582 to W2587** change `stride` itself, not this plugin: Step 5.5 charters manual tests, edge cases and change risk (W2582); Step 0 reads a confirmed `.exploratory.md` (W2583); a main-loop visual pass (W2584); an outcome and an owner for every charter (W2585); a goal-scope pass (W2586); and charter-ready manual tests at task authoring (W2587). This plugin has no Step 5.5; the equivalent work belongs to `stride-copilot`.
+- **W2588** replayed the new Step 5.5 in the Claude Code edition only. It says nothing about Copilot, so this release claims no catch rate for this edition.
+- **The probe harness and change mode have not been run under Copilot.** Copilot was not installed where this was written; the rules are pinned by the structure tests only.
+- **There is still no hook suite here**, so drift between this edition's contract `1.1` and what a `stride-copilot` consumer reads is not checked from this repository.
+
+**Divergence owed upstream:** the Claude Code explorer states neither the probe-file write form (`noclobber` and the `[ ! -e ]` and `[ ! -L ]` tests) nor the refusals added in W2662 (a `..` probe path, a `PROBE_DIR` with a trailing `/`, a `.` or `-`-led segment or a link in it, the second `git check-ignore`).
+
 ## [0.3.0] - 2026-10-29
 
 Ports the G449-G451 batch from the Claude Code plugin to GitHub Copilot, in this edition's own wording. The `explorer` agent gains an inline card, the versioned output contract `1.0`, curl-only HTTP observation with a `no_observation_surface` ending, a structured safety boundary, an optional report file with a bounded summary, verify mode and a ranged-read rule; the harden skill can run unattended from a persisted report; and the always-loaded descriptions are shorter, with two skill sections moved to linked references.

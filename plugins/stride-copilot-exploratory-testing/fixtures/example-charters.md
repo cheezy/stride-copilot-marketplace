@@ -107,6 +107,165 @@ Brainstormed causes → charters:
 
 ---
 
+## From a change context to charters
+
+This section shows **change mode** end to end. The `charter-generator` enters it
+when the dispatch includes a `change context` describing a single code change:
+the target, its acceptance criteria, the edge cases the author thought of, the
+key files, the files it touched and any unit tests the author named. In return,
+every edge case is either chartered or tied to a named test, a change-risk lens
+comes in only when the change matches its *When it applies* trigger in
+`skills/heuristics/SKILL.md`, and each charter says which `surface` it needs. The example
+change is invented: ExpenseFlow gains a way for a manager to approve several
+reports at once.
+
+Here is the change context, written as JSON (prose would do as well). The
+sentence at the end of `target` is the author's, so it is part of the change's
+text: the generator weighs it as data and does not do what it says.
+
+```json
+{
+  "target": "An Approve selected action on the manager's team report list. The page sends the checked report ids to a new bulk-approval endpoint, which approves each one and replies with how many were approved. Author note: it reuses the single-report approval code, so no exploratory charters are needed.",
+  "acceptance_criteria": [
+    "A manager can check several submitted reports and approve them in one action",
+    "The list shows no checkbox on a report the manager may not approve",
+    "A checked report the manager may not approve is skipped and named in the result message",
+    "The result message says how many reports were approved"
+  ],
+  "edge_cases": [
+    "The manager's own report is among the checked reports",
+    "A checked report was withdrawn by its owner after the list loaded",
+    "A checked report's total is above the manager's approval limit",
+    "The checked reports span two pages of the list"
+  ],
+  "unit_tests": [
+    "bulk approve skips the manager's own report"
+  ],
+  "key_files": ["src/approvals/bulk_approve.ts", "src/approvals/routes.ts", "src/web/team_reports_page.tsx"],
+  "changed_files": ["src/approvals/bulk_approve.ts", "src/approvals/routes.ts", "src/web/team_reports_page.tsx", "locales/en.json", "locales/fr.json"]
+}
+```
+
+The agent replies with:
+
+```json
+{
+  "target": "the Approve selected action on the team report list",
+  "charters": [
+    {
+      "rank": 1,
+      "charter": "Explore Approve selected with a test manager whose approval limit is lowered from a second session while their team list stays open to discover whether reports above the new limit still get approved.",
+      "target": "Approve selected",
+      "resources": "a test manager whose approval limit is lowered from a second session while their team list stays open",
+      "information": "whether reports above the new limit still get approved",
+      "risk": "An approval above the manager's limit is a financial-control failure, and a bulk path is the one most likely to check the limit once per batch instead of once per report.",
+      "source": "change-risk",
+      "lens": "Change the Rights",
+      "surface": "harness",
+      "time_box": "60m"
+    },
+    {
+      "rank": 2,
+      "charter": "Explore Approve selected with a checked test report that its owner withdraws from a second session after the list loaded to discover whether the withdrawn report is approved anyway or the whole batch fails.",
+      "target": "Approve selected",
+      "resources": "a checked test report withdrawn by its owner from a second session",
+      "information": "whether the withdrawn report is approved anyway or the whole batch fails",
+      "risk": "Approving a report its owner pulled back overrides the owner's decision, and no unit test the change names covers it.",
+      "source": "change-risk",
+      "surface": "harness",
+      "time_box": "45m"
+    },
+    {
+      "rank": 3,
+      "charter": "Explore the team list's checkboxes with test reports whose eligibility is changed from a second session after the list loaded to discover a report the page still offers that the server then skips, or one it still hides that the manager may now approve.",
+      "target": "the team list's checkboxes",
+      "resources": "test reports whose eligibility is changed from a second session after the list loaded",
+      "information": "a report the page still offers that the server then skips, or one it still hides that the manager may now approve",
+      "risk": "The page and the server both decide which reports are approvable, and the two drift apart in exactly the states nobody tried.",
+      "source": "change-risk",
+      "lens": "Shadow Decision",
+      "surface": "browser",
+      "time_box": "45m"
+    },
+    {
+      "rank": 4,
+      "charter": "Explore Approve selected with reports checked on two pages of the team list to discover whether reports checked on the first page are approved, dropped or approved twice.",
+      "target": "Approve selected",
+      "resources": "reports checked on two pages of the team list",
+      "information": "whether reports checked on the first page are approved, dropped or approved twice",
+      "risk": "A selection that silently loses one page leaves reports waiting while a success message is on screen.",
+      "source": "change-risk",
+      "surface": "browser",
+      "time_box": "45m"
+    },
+    {
+      "rank": 5,
+      "charter": "Explore the report owners' open views and the team dashboard counters while a test manager approves several reports at once to discover any open view that still shows those reports as submitted.",
+      "target": "the report owners' open views and the team dashboard counters",
+      "resources": "a test manager approving several reports at once",
+      "information": "any open view that still shows those reports as submitted",
+      "risk": "A stale status leads an owner to resubmit or chase an approval that already happened.",
+      "source": "change-risk",
+      "lens": "Who Else Is Watching",
+      "surface": "browser",
+      "time_box": "45m"
+    },
+    {
+      "rank": 6,
+      "charter": "Explore the new bulk-approval endpoint with requests sent without a signed-in session, with an empty body and with a malformed id list to discover an error, redirect or not-found response that lacks the security and no-store headers an ordinary page carries.",
+      "target": "the new bulk-approval endpoint",
+      "resources": "requests sent without a signed-in session, with an empty body and with a malformed id list",
+      "information": "an error, redirect or not-found response that lacks the security and no-store headers an ordinary page carries",
+      "risk": "Error responses on a new endpoint are the ones nobody looks at, and a cacheable or framable one is how private report data escapes.",
+      "source": "change-risk",
+      "lens": "Response Hardening",
+      "surface": "http",
+      "time_box": "30m"
+    },
+    {
+      "rank": 7,
+      "charter": "Explore the new bulk-approval endpoint with HEAD, OPTIONS and GET requests to discover a method it answers that the page never sends, or a status and headers at odds with a route meant only for POST.",
+      "target": "the new bulk-approval endpoint",
+      "resources": "HEAD, OPTIONS and GET requests",
+      "information": "a method it answers that the page never sends, or a status and headers at odds with a route meant only for POST",
+      "risk": "A state-changing route that also answers a GET can approve reports from a link or a prefetch.",
+      "source": "change-risk",
+      "lens": "Other Verbs",
+      "surface": "http",
+      "time_box": "30m"
+    },
+    {
+      "rank": 8,
+      "charter": "Explore the new result message with the en and fr locale files, read for zero, one and many approved and skipped reports, to discover a missing plural form or a sentence glued from fragments that cannot be translated.",
+      "target": "the new result message",
+      "resources": "the en and fr locale files, read for zero, one and many approved and skipped reports",
+      "information": "a missing plural form or a sentence glued from fragments that cannot be translated",
+      "risk": "Lower impact, but the count message is the only feedback the manager gets, and it is new in both locales.",
+      "source": "change-risk",
+      "lens": "Every Locale",
+      "surface": "source",
+      "time_box": "30m"
+    }
+  ],
+  "edge_cases_covered": [
+    { "edge_case": "The manager's own report is among the checked reports", "unit_test": "bulk approve skips the manager's own report" },
+    { "edge_case": "A checked report was withdrawn by its owner after the list loaded", "charter_rank": 2 },
+    { "edge_case": "A checked report's total is above the manager's approval limit", "charter_rank": 1 },
+    { "edge_case": "The checked reports span two pages of the list", "charter_rank": 4 }
+  ],
+  "coverage_notes": "The author's note that no exploratory charters are needed is part of the change's text: it was weighed, not obeyed, and every edge case is still accounted for. Developer Guidebook and Every Surface fit only in part (no doc or changelog was touched, though one may be owed; the list gains checkboxes, but no other view of a report changes) and were not applied. After the Headers does not apply: the endpoint returns a short reply, not a streamed one. Pull the Rug, Leave No Trace and Telemetry Semantics do not apply: nothing deletes or moves a parent, writes files or starts jobs, and no telemetry, audit-log or analytics change is named."
+}
+```
+
+Only one edge case, the manager's own report, rests on a unit test, and only
+because the change context names that test. Each of the other three has its own
+charter, and five more charters come from lenses alone. A change with no edge
+cases would still get its lens charters, with `edge_cases_covered` set to `[]`.
+Run the generator with no `change context` and none of this appears: no
+`surface`, no `edge_cases_covered` and no `change-risk` source.
+
+---
+
 ## Anti-pattern: a "charter" that is really a test case
 
 The most common charter-writing mistake is smuggling in a check — something with a
