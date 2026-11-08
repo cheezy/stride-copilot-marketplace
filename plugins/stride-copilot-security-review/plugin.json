@@ -1,7 +1,7 @@
 {
   "name": "stride-copilot-security-review",
   "description": "AI-powered security review of code changes via the security-review-essentials skill — diff or full-repo scans with framework rule packs for web, mobile and CI/CD. Emits SARIF with severity gating for CI, plus a considerations mode that checks a task's security_considerations were mitigated.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "author": {
     "name": "Jeff Morgan",
     "email": "cheezy@letstango.ca"
