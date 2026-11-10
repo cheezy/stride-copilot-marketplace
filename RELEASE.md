@@ -64,16 +64,39 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 
    Compare against the port's working tree, as `rsync` does — not against its last tag; the catalog vendors the port's checkout, so a tag-based diff reports differences that are not drift. A line naming a *port* instead is that port's to fix by placing the anchor beside its own statement of the rule — not by editing an `applies_to` row in the canon, which would only record that the port does not owe what it does. This step sits here, ahead of the commit, because a red result at this point costs one re-run of step 1 and nothing else.
 
-6. **Scan for secrets**, then commit and push:
+6. **Stage the re-vendored tree and secret-scan it and the whole history**, from the repository root:
 
    ```bash
-   git grep -nI 'BEGIN [A-Z ]*PRIVATE KEY\|ghp_[A-Za-z0-9]\{20,\}\|github_pat_[A-Za-z0-9_]\{20,\}\|stride_dev_[A-Za-z0-9+/=]\{30,\}\|stride_prod_[A-Za-z0-9+/=]\{30,\}' $(git rev-list --all)   # expect empty
+   cd "$(git rev-parse --show-toplevel)"
    git add -A
+   SECRET_RE='BEGIN [A-Z ]*PRIVATE KEY\|ghp_[A-Za-z0-9]\{20,\}\|github_pat_[A-Za-z0-9_]\{20,\}\|stride_dev_[A-Za-z0-9+/=]\{30,\}\|stride_prod_[A-Za-z0-9+/=]\{30,\}'
+   git --no-pager grep -n -G --cached "$SECRET_RE"
+   git --no-pager grep -n -G "$SECRET_RE" $(git rev-list --all)
+   ```
+
+   **Expect literally zero output from both scans.** Any hit is a real finding — stop, do not commit, and rotate the credential. There is no allow-list to consult and none to widen. See [About the secret-scan pattern](#about-the-secret-scan-pattern) for why each clause is shaped the way it is; do not simplify it without re-reading that section.
+
+   Only when both scans printed nothing, commit and push:
+
+   ```bash
    git commit -m "Sync stride-copilot to X.Y.Z"
    git push origin main
    ```
 
-   **Expect literally zero output.** Any hit is a real finding — investigate before pushing. See [About the secret-scan pattern](#about-the-secret-scan-pattern) for why each clause is shaped the way it is; do not simplify it without re-reading that section.
+   **The scans and the commit are separate blocks on purpose.** `git grep` prints a hit and carries on, so a single block pasted whole would commit and push whatever the scans had just reported. Its exit status also reads backwards for a gate — `0` means it found a match — so do not chain the commit onto a scan with `&&` or run the block under `set -e`.
+
+   **Stage first, because history alone cannot see what you are about to commit.** `$(git rev-list --all)` lists commits, so the second scan reads committed history only, and the files step 1's `rsync` has just copied in sit in no commit yet. `git add -A` puts every one of them in the index — new files, changed files, and the removal of any file `rsync --delete` dropped — and `git grep --cached` reads the index, which is exactly the tree the commit records. Keep the history scan as well: the index cannot see a credential that an earlier commit added and a later one removed.
+
+   **Run from the root, and without `-I`.** `git grep` searches only the current directory and below, while `git add -A` stages the whole tree, so from a subdirectory both scans would come back empty over files they never read; the `cd` removes that. And `-I` would skip every file git treats as binary — including any plain-text file a vendored `.gitattributes` marks `binary` or `-diff` — so a credential there would reach the commit with no output at all. Without it, a match in such a file is reported as a `Binary file … matches` line, which is a hit like any other. A compressed archive or non-UTF-8 text is opaque to both scans either way, so a vendored tree should not carry one.
+
+   **Keep `-G`.** `SECRET_RE` is a basic regular expression — its `\|` and `\{30,\}` mean alternation and a repeat count only in that mode — and `git grep` otherwise takes its mode from the operator's `grep.patternType` or `grep.extendedRegexp` setting. Under `extended` or `perl` those characters are literals, the pattern matches nothing, and both scans print the empty output this step reads as a pass. `-G` (`--basic-regexp`) fixes the mode on the command line, so the gate means the same thing on every machine.
+
+   **Keep `--no-pager`.** In a terminal, `git grep` sends any output it has to the pager, and a pager started by the first scan reads the keystrokes of the lines pasted after it — so on any index hit the history scan is swallowed and never runs, or worse, `less` treats the pasted text as its own commands. `--no-pager` prints straight to the terminal, so a pasted block runs every line it shows.
+
+   **What a hit costs depends on which scan printed it.** The index scan prints `<path>:<line>:` (or `Binary file <path> matches`); the history scan prints `<commit>:<path>:<line>:` (or `Binary file <commit>:<path> matches`). Read the two outputs together, because a token that is already committed and still in the tree is reported by *both*:
+
+   - **A history hit** is already in a commit, normally one that has been pushed, and neither unstaging nor a re-vendor clears it — rotate the credential at once, and stop the release for a human to decide what happens to that history. Every index line for the same path is part of this hit, not a separate, recoverable one.
+   - **An index hit with no history hit for the same path** has not left your machine through this repository: `git restore --staged .` unstages the tree, and the fix belongs where the file comes from — the source plugin for anything under `plugins/`, then re-vendor from step 1; this repository's own tree for anything else, since a re-vendor does not touch it — then scan again. Still rotate the credential: the source plugin's own repository may already carry it.
 
 7. **Tag the catalog** with the next free number in *this repo's* tag series — **not** the plugin's `X.Y.Z`, and **not** `metadata.version` (see [Three version numbers to keep straight](#three-version-numbers-to-keep-straight)). Writing `vA.B.C` for that catalog tag:
 
@@ -102,7 +125,8 @@ Assume the upstream plugin has just tagged a new version (e.g. `stride-copilot` 
 - [ ] README `Plugins` table version updated to match
 - [ ] Verify command prints `synced at X.Y.Z`
 - [ ] Port-canon drift check run; every line naming a copy vendored from this repo is gone, or is classified as a faithful port-side gap and recorded in the commit body and release notes
-- [ ] Secret scan returns zero output, committed and pushed
+- [ ] From the repository root, tree staged with `git add -A`, then both secret scans — the staged tree (`--cached`) and the history — return zero output, before the commit block runs
+- [ ] Committed and pushed
 - [ ] Catalog tagged `vA.B.C` — next free number in this repo's series, not the plugin's `X.Y.Z` — and the tag pushed
 - [ ] GitHub release cut for `vA.B.C`, with the user's explicit authorization in that turn
 
@@ -147,16 +171,24 @@ Assume the new plugin `<name>` has a tagged release `vX.Y.Z`. From the repositor
    bash ../stride/scripts/check-port-canon.sh
    ```
 
-7. **Scan for secrets**, then commit and push:
+7. **Stage the new plugin tree and secret-scan it and the whole history**, from the repository root, exactly as in [Sync steps](#sync-steps) step 6:
 
    ```bash
-   git grep -nI 'BEGIN [A-Z ]*PRIVATE KEY\|ghp_[A-Za-z0-9]\{20,\}\|github_pat_[A-Za-z0-9_]\{20,\}\|stride_dev_[A-Za-z0-9+/=]\{30,\}\|stride_prod_[A-Za-z0-9+/=]\{30,\}' $(git rev-list --all)   # expect empty
+   cd "$(git rev-parse --show-toplevel)"
    git add -A
+   SECRET_RE='BEGIN [A-Z ]*PRIVATE KEY\|ghp_[A-Za-z0-9]\{20,\}\|github_pat_[A-Za-z0-9_]\{20,\}\|stride_dev_[A-Za-z0-9+/=]\{30,\}\|stride_prod_[A-Za-z0-9+/=]\{30,\}'
+   git --no-pager grep -n -G --cached "$SECRET_RE"
+   git --no-pager grep -n -G "$SECRET_RE" $(git rev-list --all)
+   ```
+
+   **Expect literally zero output from both scans.** Any hit is a real finding — stop, do not commit, and rotate the credential. Staging first matters even more here: the new plugin tree is entirely untracked, so the history scan alone sees none of it, and only the staged-tree scan (`git grep --cached`) reads it before the commit. This is the same pattern as the [Sync steps](#sync-steps); keep the two identical, and read step 6 there for why the blocks are separate, why the scan runs from the root without `-I` and with `-G` and `--no-pager`, and what an index hit costs against a history hit. See [About the secret-scan pattern](#about-the-secret-scan-pattern).
+
+   Only when both scans printed nothing, commit and push:
+
+   ```bash
    git commit -m "Add <name> as a marketplace plugin"
    git push origin main
    ```
-
-   **Expect literally zero output.** Any hit is a real finding — investigate before pushing. This is the same pattern as the [Sync steps](#sync-steps); keep the two identical. See [About the secret-scan pattern](#about-the-secret-scan-pattern).
 
 ### Add-a-plugin checklist
 
@@ -166,7 +198,8 @@ Assume the new plugin `<name>` has a tagged release `vX.Y.Z`. From the repositor
 - [ ] README `Plugins` table row added
 - [ ] Verify command prints `all N plugins resolve and versions match`
 - [ ] Port-canon drift check run; the new vendored copy does not appear in its output, or appears only as a faithful port-side gap that is recorded
-- [ ] Secret scan returns zero output, committed and pushed
+- [ ] From the repository root, tree staged with `git add -A`, then both secret scans — the staged tree (`--cached`) and the history — return zero output, before the commit block runs
+- [ ] Committed and pushed
 
 ## About the secret-scan pattern
 
@@ -182,6 +215,6 @@ The scan in both flows above is one pattern; keep them identical. Each clause is
 Two consequences worth keeping:
 
 - **Zero output is the pass condition.** There is no `| head` and no `grep -v` allow-list, because the pattern excludes fixtures and self-matches structurally rather than filtering them after the fact. An allow-list rots as fixtures are added; a shape-based bound does not.
-- **The scan covers all history** (`$(git rev-list --all)`), so a token committed and later removed is still caught. That is also why a self-matching pattern is unacceptable: it would be permanently red.
+- **The pattern runs as two scans, and neither alone is enough.** `git grep --cached` reads the staged tree — exactly what the commit will record, including everything step 1 has just re-vendored, which sits in no commit yet. `git grep ... $(git rev-list --all)` reads every commit, so a token committed and later removed is still caught, but it cannot see the uncommitted tree at all. That is also why a self-matching pattern is unacceptable: it would be permanently red in both.
 
-To re-validate after editing the pattern: plant a realistic 43-character fake token in a scratch file, confirm the scan reports it, delete it, and confirm the scan then returns nothing across all history.
+To re-validate after editing the pattern: plant a self-describing fake token in a scratch file — 43 unbroken letters and digits after the prefix, with no `_` or `-`, which would break the run the `{30,}` bound measures — stage it, confirm the staged-tree scan reports it, unstage and delete it, and confirm both scans then return nothing.
